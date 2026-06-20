@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import Hls from "hls.js";
+import parser from "iptv-playlist-parser";
 import {
   Tv, Search, X, Settings, List, Folder, Heart, Film, Newspaper,
   Trophy, Music, Smile, Church, CloudSun, ShoppingCart, GraduationCap,
@@ -124,40 +125,36 @@ async function checkStreamStatus(url) {
 }
 
 function parseM3U(text) {
-  const channels = [];
-  const lines = text.split(/\r?\n/);
-  let meta = null;
-  const attrRe = /([a-zA-Z0-9_-]+)=(?:"([^"]*)"|([^ ]*))/g;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.startsWith("#EXTINF:")) {
-      const ci = line.lastIndexOf(",");
-      if (ci === -1) continue;
-      const attrs = {};
-      let m; attrRe.lastIndex = 0;
-      while ((m = attrRe.exec(line.substring(0, ci))) !== null)
-        attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? "";
-      meta = {
-        name: line.substring(ci + 1).trim(),
-        logo: attrs["tvg-logo"] || "",
-        group: attrs["group-title"] || "Undefined",
-        tvgId: attrs["tvg-id"] || "",
-        country: attrs["tvg-country"] || "",
-        language: attrs["tvg-language"] || "",
-        isGeoBlocked: line.toLowerCase().includes("geo-blocked"),
-        not247: line.toLowerCase().includes("not 24/7"),
-      };
-    } else if (!line.startsWith("#") && (line.startsWith("http://") || line.startsWith("https://"))) {
-      channels.push(meta ? { ...meta, url: line } : {
-        name: line.split("/").pop().replace(/\.m3u8?/, "") || "Stream",
-        logo: "", group: "Undefined", tvgId: "", country: "", language: "",
-        url: line, isGeoBlocked: false, not247: false,
-      });
-      meta = null;
+  try {
+    let cleanText = text;
+    const extm3uIndex = text.indexOf("#EXTM3U");
+    if (extm3uIndex !== -1) {
+      cleanText = text.substring(extm3uIndex);
     }
+    const playlist = parser.parse(cleanText);
+    return playlist.items.map(item => {
+      const countryMatch = item.raw.match(/tvg-country="([^"]*)"/i) || item.raw.match(/tvg-country=([^ ]*)/i);
+      const country = countryMatch ? countryMatch[1] : "";
+
+      const languageMatch = item.raw.match(/tvg-language="([^"]*)"/i) || item.raw.match(/tvg-language=([^ ]*)/i);
+      const language = languageMatch ? languageMatch[1] : "";
+
+      return {
+        name: item.name || "Stream",
+        logo: item.tvg.logo || "",
+        group: item.group.title || "Undefined",
+        tvgId: item.tvg.id || "",
+        country,
+        language,
+        isGeoBlocked: item.raw.toLowerCase().includes("geo-blocked"),
+        not247: item.raw.toLowerCase().includes("not 24/7"),
+        url: item.url,
+      };
+    });
+  } catch (err) {
+    console.error("Failed to parse playlist with iptv-playlist-parser:", err);
+    return [];
   }
-  return channels;
 }
 
 function flagEmoji(code) {
@@ -242,6 +239,7 @@ export default function IPTVPage() {
   const [currentCategory, setCurrentCategory] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [showOnlyActive, setShowOnlyActive] = useState(false);
   const PAGE_SIZE = 80;
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -327,16 +325,26 @@ export default function IPTVPage() {
     reader.readAsText(file);
   };
 
-  /* Derived state */
   const filtered = useMemo(() => {
     let r = [...channels];
     if (currentCategory) r = r.filter(c => c.group.split(";").map(g => g.trim()).includes(currentCategory));
     if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      r = r.filter(c => c.name.toLowerCase().includes(q) || c.group.toLowerCase().includes(q) || (c.country && c.country.toLowerCase().includes(q)));
+      const q = searchQuery.toLowerCase().trim();
+      r = r.filter(c => {
+        const name = c.name.toLowerCase();
+        const group = c.group.toLowerCase();
+        const country = (c.country || "").toLowerCase();
+        if (q === "world cup" || q === "worldcup" || q === "wc" || q === "fifa") {
+          return name.includes("world cup") || name.includes("worldcup") || name.includes("fifa") || name.includes("icc") || name.includes("t20") || name.includes("sports 18") || group.includes("sports");
+        }
+        return name.includes(q) || group.includes(q) || country.includes(q);
+      });
+    }
+    if (showOnlyActive) {
+      r = r.filter(c => (streamStatus[c.url] !== "offline" && !c.isGeoBlocked) || (activeChannel && activeChannel.url === c.url));
     }
     return r;
-  }, [channels, currentCategory, searchQuery]);
+  }, [channels, currentCategory, searchQuery, showOnlyActive, streamStatus, activeChannel]);
 
   const categories = useMemo(() => {
     const counts = {};
@@ -675,6 +683,50 @@ export default function IPTVPage() {
                     className="p-0.5 rounded hover:bg-violet-500/20 text-violet-300 transition-all"><X className="w-3.5 h-3.5" /></button>
                 </div>
               )}
+              {/* Filter bar */}
+              <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.04] bg-slate-900/40 text-slate-400 text-[11px] select-none">
+                <span className="font-semibold uppercase tracking-wider text-slate-500">
+                  {currentCategory ? "Filtered Channels" : "All Channels"}
+                </span>
+                <button
+                  onClick={() => { setShowOnlyActive(!showOnlyActive); setPage(1); }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-all
+                    ${showOnlyActive
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.05)]"
+                      : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.12] text-slate-400 hover:text-slate-200"
+                    }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${showOnlyActive ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+                  Show Only Active
+                </button>
+              </div>
+              {/* Quick Tags / Trending Searches */}
+              <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-white/[0.03] bg-slate-900/20 overflow-x-auto scrollbar-none text-[10px] select-none">
+                <span className="text-slate-500 font-semibold uppercase flex-shrink-0 mr-1">Trending:</span>
+                {[
+                  { label: "World Cup 🏆", query: "world cup" },
+                  { label: "Cricket 🏏", query: "icc" },
+                  { label: "Sports ⚽", query: "sports" },
+                  { label: "News 📰", query: "news" },
+                  { label: "Movies 🎬", query: "movie" }
+                ].map(t => (
+                  <button
+                    key={t.label}
+                    onClick={() => {
+                      const nextQuery = searchQuery.toLowerCase().trim() === t.query ? "" : t.query;
+                      setSearchQuery(nextQuery);
+                      setPage(1);
+                    }}
+                    className={`px-2 py-0.5 rounded-full border transition-all flex-shrink-0 font-medium
+                      ${searchQuery.toLowerCase().trim() === t.query
+                        ? "bg-violet-500/15 border-violet-500/40 text-violet-300"
+                        : "bg-white/[0.02] border-white/[0.05] text-slate-400 hover:border-white/10 hover:text-slate-200"
+                      }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
               <div id="ch-scroll" className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
                 {isPlaylistLoading ? (
                   <div className="flex flex-col items-center justify-center flex-1 gap-3 text-slate-500">
@@ -717,16 +769,38 @@ export default function IPTVPage() {
 
           {/* Favorites Panel */}
           {activeTab === "favorites" && (
-            <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
-              {favorites.length === 0 ? (
-                <div className="flex flex-col items-center justify-center flex-1 gap-3 text-slate-500">
-                  <Heart className="w-12 h-12 opacity-20" />
-                  <p className="text-sm font-semibold">No favorites yet</p>
-                  <span className="text-xs text-center max-w-[180px] opacity-70">Click the heart icon on any channel to save it here.</span>
-                </div>
-              ) : (
-                channels.filter(c => favorites.includes(c.url)).map((ch, i) => <ChannelCard key={ch.url + "fav" + i} channel={ch} idx={i} />)
-              )}
+            <div className="flex flex-col flex-1 min-h-0">
+              {/* Filter bar */}
+              <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.04] bg-slate-900/40 text-slate-400 text-[11px] select-none">
+                <span className="font-semibold uppercase tracking-wider text-slate-500">
+                  Your Favorites
+                </span>
+                <button
+                  onClick={() => { setShowOnlyActive(!showOnlyActive); }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-all
+                    ${showOnlyActive
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.05)]"
+                      : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.12] text-slate-400 hover:text-slate-200"
+                    }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${showOnlyActive ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+                  Show Only Active
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+                {favorites.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center flex-1 gap-3 text-slate-500">
+                    <Heart className="w-12 h-12 opacity-20" />
+                    <p className="text-sm font-semibold">No favorites yet</p>
+                    <span className="text-xs text-center max-w-[180px] opacity-70">Click the heart icon on any channel to save it here.</span>
+                  </div>
+                ) : (
+                  channels
+                    .filter(c => favorites.includes(c.url))
+                    .filter(c => !showOnlyActive || (streamStatus[c.url] !== "offline" && !c.isGeoBlocked) || (activeChannel && activeChannel.url === c.url))
+                    .map((ch, i) => <ChannelCard key={ch.url + "fav" + i} channel={ch} idx={i} />)
+                )}
+              </div>
             </div>
           )}
         </aside>
@@ -1058,6 +1132,8 @@ export default function IPTVPage() {
                       {[
                         ["All Categories", DEFAULT_PLAYLIST],
                         ["Full Index", "https://iptv-org.github.io/iptv/index.m3u"],
+                        ["Lupael IPTV", "https://lupael.github.io/IPTV/running.m3u"],
+                        ["Mrgify BDIX", "https://raw.githubusercontent.com/abusaeeidx/Mrgify-BDIX-IPTV/main/playlist.m3u"],
                         ["By Language", "https://iptv-org.github.io/iptv/index.language.m3u"],
                         ["By Country",  "https://iptv-org.github.io/iptv/index.country.m3u"],
                       ].map(([label, url]) => (

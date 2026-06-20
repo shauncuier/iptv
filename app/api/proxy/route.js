@@ -23,9 +23,19 @@ export async function GET(request) {
     });
   }
 
+  let cleanUrl = targetUrl.trim();
+  try {
+    const urlObj = new URL(cleanUrl);
+    if (urlObj.hostname === "github.com" && urlObj.pathname.includes("/blob/")) {
+      urlObj.hostname = "raw.githubusercontent.com";
+      urlObj.pathname = urlObj.pathname.replace("/blob/", "/");
+      cleanUrl = urlObj.toString();
+    }
+  } catch {}
+
   let parsed;
   try {
-    parsed = new URL(targetUrl);
+    parsed = new URL(cleanUrl);
   } catch {
     return new Response(JSON.stringify({ error: "Invalid URL" }), {
       status: 400,
@@ -44,7 +54,7 @@ export async function GET(request) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-    const upstream = await fetch(targetUrl, {
+    const upstream = await fetch(cleanUrl, {
       signal: controller.signal,
       headers: {
         "User-Agent":
