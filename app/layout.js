@@ -12,14 +12,14 @@ const outfit = Outfit({
 });
 
 export const metadata = {
-  title: "3s-IPTV - Premium Live Television Stream Player",
-  description: "A premium, high-performance IPTV web player built with Next.js, React, and Hls.js.",
+  title: "3S-IPTV — Free Live TV Powered by iptv-org",
+  description: "Stream 8,000+ free live TV channels from iptv-org.github.io. Browse by category, language, or country. Powered by HLS.js and Next.js.",
 };
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={`${inter.variable} ${outfit.variable}`}>
-      <body>
+    <html lang="en" className={`${inter.variable} ${outfit.variable}`} style={{ height: "100%", overflow: "hidden" }}>
+      <body style={{ height: "100%", overflow: "hidden" }}>
         {children}
       </body>
     </html>
