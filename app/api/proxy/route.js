@@ -50,19 +50,50 @@ export async function GET(request) {
     });
   }
 
+  const reqHeaders = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    Accept: "image/*,text/plain,application/x-mpegurl,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: `${parsed.protocol}//${parsed.host}/`,
+  };
+
+  // Lightweight liveness check: returns { ok, status } without downloading the
+  // stream body. Used by the "Show Only Active" filter to detect dead/geo-blocked
+  // channels reliably (no-cors client fetches can't read the real HTTP status).
+  if (searchParams.get("check")) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const probe = await fetch(cleanUrl, {
+        method: "GET",
+        signal: controller.signal,
+        headers: { ...reqHeaders, Range: "bytes=0-1" },
+        redirect: "follow",
+      });
+      clearTimeout(timeoutId);
+      // Discard the body — we only need the status line.
+      try { probe.body?.cancel(); } catch {}
+      const ok = probe.ok || probe.status === 206;
+      return new Response(JSON.stringify({ ok, status: probe.status }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ ok: false, status: 0, error: err.name === "AbortError" ? "timeout" : err.message }),
+        { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
+      );
+    }
+  }
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const upstream = await fetch(cleanUrl, {
       signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "image/*,text/plain,application/x-mpegurl,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        Referer: `${parsed.protocol}//${parsed.host}/`,
-      },
+      headers: reqHeaders,
       redirect: "follow",
     });
 

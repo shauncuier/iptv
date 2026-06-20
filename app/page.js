@@ -114,14 +114,25 @@ const IPTV_ORG_COUNTRIES = [
    Utilities
    ========================================================================== */
 
+// Reliable liveness probe via the server-side proxy. A client-side no-cors
+// fetch returns an opaque response that always "succeeds", so it can't tell a
+// live stream from a 403/404/dead host — the proxy reads the real HTTP status.
 async function checkStreamStatus(url) {
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
-    await fetch(url, { method: "GET", mode: "no-cors", signal: ctrl.signal });
+    const t = setTimeout(() => ctrl.abort(), 11000);
+    const res = await fetch(`/api/proxy?check=1&url=${encodeURIComponent(url)}`, { signal: ctrl.signal });
     clearTimeout(t);
-    return "online";
+    if (!res.ok) return "offline";
+    const data = await res.json();
+    return data.ok ? "online" : "offline";
   } catch { return "offline"; }
+}
+
+// World Cup channel matcher — name / group / tvg-id keywords across languages.
+const WORLD_CUP_RE = /world\s*cup|worldcup|fifa|wc\s?20?26|copa\s*mundial|coupe\s*du\s*monde|mundial|weltmeisterschaft/i;
+function isWorldCupChannel(c) {
+  return WORLD_CUP_RE.test(`${c.name} ${c.group} ${c.tvgId}`);
 }
 
 function parseM3U(text) {
@@ -240,6 +251,7 @@ export default function IPTVPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const [showOnlyActive, setShowOnlyActive] = useState(false);
+  const [showWorldCup, setShowWorldCup] = useState(false);
   const PAGE_SIZE = 80;
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -327,6 +339,7 @@ export default function IPTVPage() {
 
   const filtered = useMemo(() => {
     let r = [...channels];
+    if (showWorldCup) r = r.filter(isWorldCupChannel);
     if (currentCategory) r = r.filter(c => c.group.split(";").map(g => g.trim()).includes(currentCategory));
     if (searchQuery) {
       const q = searchQuery.toLowerCase().trim();
@@ -344,7 +357,7 @@ export default function IPTVPage() {
       r = r.filter(c => (streamStatus[c.url] !== "offline" && !c.isGeoBlocked) || (activeChannel && activeChannel.url === c.url));
     }
     return r;
-  }, [channels, currentCategory, searchQuery, showOnlyActive, streamStatus, activeChannel]);
+  }, [channels, currentCategory, searchQuery, showWorldCup, showOnlyActive, streamStatus, activeChannel]);
 
   const categories = useMemo(() => {
     const counts = {};
@@ -394,6 +407,7 @@ export default function IPTVPage() {
         setIsLoadingStream(false); setIsPlaying(false);
         if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
         video.pause(); video.src = ""; video.load();
+        setStreamStatus(p => ({ ...p, [url]: "offline" }));
         setPlaybackError("Connection timed out. The stream may be offline, geo-blocked, or blocked by CORS.");
       }
     }, 10000);
@@ -438,6 +452,7 @@ export default function IPTVPage() {
                            d.details === Hls.ErrorDetails.KEY_LOAD_TIMEOUT;
         if (isKeyError) {
           stopPlayback();
+          setStreamStatus(p => ({ ...p, [url]: "offline" }));
           setPlaybackError("Stream uses AES-128 encryption and its key server blocked the request. Try another channel or open in VLC.");
         } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
           hls.startLoad();
@@ -445,6 +460,7 @@ export default function IPTVPage() {
           hls.recoverMediaError();
         } else {
           stopPlayback();
+          setStreamStatus(p => ({ ...p, [url]: "offline" }));
           setPlaybackError("Could not connect to stream server. It may be offline or geo-blocked.");
         }
       });
@@ -456,7 +472,7 @@ export default function IPTVPage() {
       clearTimeout(timeout); setPlaybackError("HLS not supported. Use Chrome or Edge."); setIsLoadingStream(false);
     }
 
-    const onPlaying = () => { clearTimeout(timeout); setIsLoadingStream(false); setIsPlaying(true); };
+    const onPlaying = () => { clearTimeout(timeout); setIsLoadingStream(false); setIsPlaying(true); setStreamStatus(p => ({ ...p, [url]: "online" })); };
     video.addEventListener("playing", onPlaying);
     return () => { clearTimeout(timeout); if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } video.removeEventListener("playing", onPlaying); };
   }, [activeChannel]);
@@ -684,21 +700,35 @@ export default function IPTVPage() {
                 </div>
               )}
               {/* Filter bar */}
-              <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.04] bg-slate-900/40 text-slate-400 text-[11px] select-none">
-                <span className="font-semibold uppercase tracking-wider text-slate-500">
-                  {currentCategory ? "Filtered Channels" : "All Channels"}
+              <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-white/[0.04] bg-slate-900/40 text-slate-400 text-[11px] select-none">
+                <span className="font-semibold uppercase tracking-wider text-slate-500 truncate">
+                  {showWorldCup ? "World Cup" : currentCategory ? "Filtered Channels" : "All Channels"}
                 </span>
-                <button
-                  onClick={() => { setShowOnlyActive(!showOnlyActive); setPage(1); }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-all
-                    ${showOnlyActive
-                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.05)]"
-                      : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.12] text-slate-400 hover:text-slate-200"
-                    }`}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${showOnlyActive ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
-                  Show Only Active
-                </button>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={() => { setShowWorldCup(!showWorldCup); setPage(1); }}
+                    title="Show only World Cup / FIFA channels"
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-all
+                      ${showWorldCup
+                        ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.08)]"
+                        : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.12] text-slate-400 hover:text-slate-200"
+                      }`}
+                  >
+                    <Trophy className="w-3 h-3" />
+                    World Cup
+                  </button>
+                  <button
+                    onClick={() => { setShowOnlyActive(!showOnlyActive); setPage(1); }}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-all
+                      ${showOnlyActive
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.05)]"
+                        : "bg-white/[0.02] border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.12] text-slate-400 hover:text-slate-200"
+                      }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${showOnlyActive ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+                    Show Only Active
+                  </button>
+                </div>
               </div>
               {/* Quick Tags / Trending Searches */}
               <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-white/[0.03] bg-slate-900/20 overflow-x-auto scrollbar-none text-[10px] select-none">
