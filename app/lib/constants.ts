@@ -1,4 +1,32 @@
-import type { CategoryPreset, LanguagePreset, CountryPreset } from "./types";
+import type { CategoryPreset, LanguagePreset, CountryPreset, Channel } from "./types";
+
+// Hand-pinned World Cup channels. Always merged into the channel list (group
+// "World Cup" → caught by the World Cup filter) regardless of the loaded
+// playlist, so they survive playlist switches.
+export const WORLD_CUP_PINS: Channel[] = [
+  {
+    name: "TSports HD ⚽",
+    url: "http://rgkkw.live/live/1Aoen7elp5/IgMJ60tmAa/130714.ts",
+    group: "World Cup",
+    logo: "",
+    tvgId: "",
+    country: "",
+    language: "",
+    isGeoBlocked: false,
+    not247: false,
+  },
+  {
+    name: "Somoy TV ⚽ (World Cup)",
+    url: "https://live.thebosstv.com:30443/dwlive/Somoy-TV/playlist.m3u8",
+    group: "World Cup",
+    logo: "",
+    tvgId: "",
+    country: "",
+    language: "",
+    isGeoBlocked: false,
+    not247: false,
+  },
+];
 
 export const FALLBACK_LOGO =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='%238b5cf6' stroke-width='1.5'%3E%3Crect x='2' y='7' width='20' height='15' rx='2'%3E%3C/rect%3E%3Cpolyline points='17 2 12 7 7 2'%3E%3C/polyline%3E%3C/svg%3E";

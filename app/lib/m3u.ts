@@ -40,40 +40,38 @@ export function parseM3U(text: string): Channel[] {
 const WORLD_CUP_RE =
   /world\s*cup|worldcup|fifa|wc\s?20?26|copa\s*mundial|coupe\s*du\s*monde|mundial|weltmeisterschaft/i;
 
-// Official 2026 World Cup broadcasters / rights-holders by territory. These are
-// general networks that CARRY the tournament (vs channels literally named
-// "World Cup"). Leans toward sports-branded networks to limit false positives;
-// the few generalist carriers (BBC/ITV/RAI/Globo…) are noisier but official.
-const WC_BROADCASTER_RE = new RegExp(
+// Sports channels / dedicated sports broadcasters likely to carry the World
+// Cup. The "World Cup" filter is really "channels that show football", so we
+// match SPORTS networks — NOT generalist carriers like BBC One / RAI 1 / TF1,
+// which technically air the final but would flood the list with news and
+// entertainment. Brands without the literal word "sport" are listed explicitly;
+// anything whose name or group simply contains "sport" is caught separately.
+const SPORTS_BRAND_RE = new RegExp(
   [
-    // North America (hosts)
-    "fox sports", "\\bfs1\\b", "\\bfs2\\b", "telemundo", "universo", "peacock", // USA
-    "\\btsn\\b", "\\bctv\\b", "\\brds\\b", // Canada
-    "televisa", "\\btudn\\b", "tv azteca", "azteca deportes", "sky m[eé]xico", // Mexico
-    // Latin America
-    "\\bglobo\\b", "sportv", "\\bdsports\\b", "directv sports", "caracol", "\\brcn\\b",
-    "\\bgol\\s?tv\\b", "tigo sports",
-    // Europe
-    "\\bbbc\\b", "\\bitv\\b", // UK
-    "\\brai\\b", // Italy
-    "\\btf1\\b", "\\bm6\\b", // France
-    "\\bard\\b", "\\bzdf\\b", "magenta", // Germany
-    "mediaset", "telecinco", // Spain
-    // MENA / Africa / Asia-Pacific
-    "bein", "bein sports", // MENA
-    "supersport", // Sub-Saharan Africa
-    "optus sport", "\\bsbs\\b", // Australia
-    "sports\\s?18", "jiocinema", "viacom\\s?18", // India
-    "\\bnhk\\b", // Japan
+    "bein", "espn", "\\btudn\\b", "\\btsn\\b", "\\brds\\b", "\\bdazn\\b",   // global / Americas
+    "telemundo", "universo", "fox\\s?sports", "\\bfs[12]\\b",               // USA
+    "azteca deportes", "sky\\s?sport", "\\bgol\\s?tv\\b", "tigo sports",    // LatAm / Mexico
+    "sportv", "\\bdsports?\\b", "directv sports", "tyc sports", "espn deportes",
+    "supersport", "\\bssc\\b", "dubai\\s?sports", "ad\\s?sports",           // Africa / MENA
+    "abu dhabi sports", "alkass", "\\bdmc sport",
+    "star\\s?sports", "sony\\s?sports", "sports\\s?18", "willow",           // India / Asia
+    "optus\\s?sport", "premier\\s?sports", "setanta", "viaplay",            // Oceania / Europe
+    "euro\\s?sport", "arena\\s?sport", "sport\\s?tv", "nova\\s?sport",
+    "match\\s?tv", "v\\s?sport",
   ].join("|"),
   "i"
 );
 
+// A channel is "World Cup" if it is literally named after the tournament, OR it
+// is a sports channel (group/name says "sport(s)"), OR it is one of the known
+// sports broadcasters above.
 export function isWorldCupChannel(c: {
   name: string;
   group: string;
   tvgId: string;
 }): boolean {
   const hay = `${c.name} ${c.group} ${c.tvgId}`;
-  return WORLD_CUP_RE.test(hay) || WC_BROADCASTER_RE.test(hay);
+  if (WORLD_CUP_RE.test(hay)) return true;
+  if (/\bsports?\b/i.test(`${c.name} ${c.group}`)) return true; // "Sky Sports", group "Sports"
+  return SPORTS_BRAND_RE.test(c.name);
 }

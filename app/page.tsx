@@ -22,7 +22,7 @@ import PlaylistModal from "./components/PlaylistModal";
 import { parseM3U, isWorldCupChannel } from "./lib/m3u";
 import { getCachedPlaylist, setCachedPlaylist } from "./lib/cache";
 import { checkStreamStatus, flagEmoji } from "./lib/stream";
-import { DEFAULT_PLAYLIST, IPTV_ORG_CATEGORIES, IPTV_ORG_LANGUAGES, IPTV_ORG_COUNTRIES } from "./lib/constants";
+import { DEFAULT_PLAYLIST, IPTV_ORG_CATEGORIES, IPTV_ORG_LANGUAGES, IPTV_ORG_COUNTRIES, WORLD_CUP_PINS } from "./lib/constants";
 import type { Channel, StreamStatusValue } from "./lib/types";
 import { usePlayer } from "./hooks/usePlayer";
 
@@ -454,7 +454,10 @@ export default function IPTVPage() {
   const deferredQuery = useDeferredValue(searchQuery);
 
   const filtered = useMemo(() => {
-    let r = [...channels];
+    // Merge the hand-pinned World Cup channels in at the top, deduped by URL so
+    // a playlist that also carries them doesn't double-list.
+    const pinnedUrls = new Set(WORLD_CUP_PINS.map(c => c.url));
+    let r = [...WORLD_CUP_PINS, ...channels.filter(c => !pinnedUrls.has(c.url))];
     if (showWorldCup) r = r.filter(isWorldCupChannel);
     if (currentCategory) r = r.filter(c => c.group.split(";").map(g => g.trim()).includes(currentCategory));
     if (selectedCountry) r = r.filter(c => (c.country || "").toLowerCase() === selectedCountry);
@@ -465,8 +468,9 @@ export default function IPTVPage() {
         const name = c.name.toLowerCase();
         const group = c.group.toLowerCase();
         const country = (c.country || "").toLowerCase();
+        // Searching "world cup"/"fifa" mirrors the World Cup toggle exactly.
         if (q === "world cup" || q === "worldcup" || q === "wc" || q === "fifa") {
-          return name.includes("world cup") || name.includes("worldcup") || name.includes("fifa") || name.includes("icc") || name.includes("t20") || name.includes("sports 18") || group.includes("sports");
+          return isWorldCupChannel(c);
         }
         return name.includes(q) || group.includes(q) || country.includes(q);
       });
