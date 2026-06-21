@@ -184,7 +184,7 @@ export default function VideoPlayer({ player, activeChannel, onRetry, idle }: Vi
                 </button>
                 <input type="range" className="volume-slider" min="0" max="1" step="0.05" value={isMuted ? 0 : volume} onChange={handleVolume} />
               </div>
-              <span className="ml-2 text-sm font-semibold text-white truncate max-w-[90px] sm:max-w-[240px]">{activeChannel.name}</span>
+              <span className="hidden sm:inline ml-2 text-sm font-semibold text-white truncate max-w-[240px]">{activeChannel.name}</span>
             </div>
             <div className="flex items-center gap-1 sm:gap-2">
               {/* Data Saver toggle */}
