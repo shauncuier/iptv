@@ -12,7 +12,7 @@ import {
   Link as LinkIcon, UploadCloud, Upload, FileText, Trash2, CheckCircle,
   AlertOctagon, HelpCircle, Tv2, Tag, MapPin, Languages, Zap, Star,
   Car, Briefcase, Clock, Utensils, Landmark, Baby, Scale, Leaf,
-  FlaskConical, Plane, Wifi, BookOpen
+  FlaskConical, Plane, Wifi, BookOpen, Menu, Activity
 } from "lucide-react";
 
 /* ==========================================================================
@@ -294,13 +294,15 @@ export default function IPTVPage() {
   const [playlistUrl, setPlaylistUrl] = useState(DEFAULT_PLAYLIST);
   const [customUrlInput, setCustomUrlInput] = useState(DEFAULT_PLAYLIST);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalTab, setModalTab] = useState("category");
+  const [modalTab, setModalTab] = useState("sources");
   const [selectedFile, setSelectedFile] = useState(null);
   const [activePresetUrl, setActivePresetUrl] = useState(DEFAULT_PLAYLIST);
   const [isPlaylistLoading, setIsPlaylistLoading] = useState(false);
   const [isBrowseOpen, setIsBrowseOpen] = useState(false);
   const [multiLoadProgress, setMultiLoadProgress] = useState(null);
   const [loadAllSources, setLoadAllSources] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
 
   const [toasts, setToasts] = useState([]);
   const [streamStatus, setStreamStatus] = useState({});
@@ -313,6 +315,135 @@ export default function IPTVPage() {
   const loaderRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  const [aspectRatio, setAspectRatio] = useState("contain");
+  const [showStats, setShowStats] = useState(false);
+  const [stats, setStats] = useState({
+    resolution: "N/A",
+    bitrate: "N/A",
+    buffer: 0,
+    droppedFrames: 0,
+  });
+  const [hlsLevels, setHlsLevels] = useState([]);
+  const [currentLevel, setCurrentLevel] = useState(-1);
+  const [localPlaylists, setLocalPlaylists] = useState([]);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const [scanState, setScanState] = useState({
+    isScanning: false,
+    checkedCount: 0,
+    totalCount: 0,
+    onlineCount: 0,
+    offlineCount: 0,
+  });
+  const isScanCancelledRef = useRef(false);
+
+  const startLivenessScan = async (channelsToScan) => {
+    if (scanState.isScanning || !channelsToScan.length) return;
+
+    isScanCancelledRef.current = false;
+    setScanState({
+      isScanning: true,
+      checkedCount: 0,
+      totalCount: channelsToScan.length,
+      onlineCount: 0,
+      offlineCount: 0,
+    });
+
+    // Auto-enable "Show Only Active" filter so non-working ones are hidden
+    setShowOnlyActive(true);
+
+    addToast(`Starting liveness scan for ${channelsToScan.length} channels...`, "info");
+
+    const CONCURRENCY = 15;
+    let index = 0;
+    let online = 0;
+    let offline = 0;
+
+    const scanBatch = async () => {
+      if (isScanCancelledRef.current) return;
+
+      const batchPromises = [];
+      const batchStart = index;
+      const batchEnd = Math.min(index + CONCURRENCY, channelsToScan.length);
+      index = batchEnd;
+
+      for (let i = batchStart; i < batchEnd; i++) {
+        const ch = channelsToScan[i];
+
+        const promise = (async () => {
+          if (isScanCancelledRef.current) return;
+
+          // Set status to checking in state so the dot turns yellow
+          setStreamStatus(prev => ({ ...prev, [ch.url]: "checking" }));
+
+          const status = await checkStreamStatus(ch.url);
+
+          if (isScanCancelledRef.current) return;
+
+          if (status === "online") {
+            online++;
+          } else {
+            offline++;
+          }
+
+          checkedRef.current.add(ch.url);
+          setStreamStatus(prev => {
+            const next = { ...prev, [ch.url]: status };
+            streamStatusRef.current = next;
+            return next;
+          });
+
+          setScanState(prev => ({
+            ...prev,
+            checkedCount: prev.checkedCount + 1,
+            onlineCount: online,
+            offlineCount: offline,
+          }));
+        })();
+
+        batchPromises.push(promise);
+      }
+
+      await Promise.all(batchPromises);
+
+      if (index < channelsToScan.length && !isScanCancelledRef.current) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        await scanBatch();
+      }
+    };
+
+    try {
+      await scanBatch();
+      if (!isScanCancelledRef.current) {
+        addToast(`Scan complete! ${online} active, ${offline} offline channels.`, "success");
+      }
+    } catch (err) {
+      console.error("Scan error:", err);
+      addToast("Error during channel scan.", "error");
+    } finally {
+      setScanState(prev => ({ ...prev, isScanning: false }));
+    }
+  };
+
+  const cancelLivenessScan = () => {
+    isScanCancelledRef.current = true;
+    setScanState({
+      isScanning: false,
+      checkedCount: 0,
+      totalCount: 0,
+      onlineCount: 0,
+      offlineCount: 0,
+    });
+    addToast("Liveness scan cancelled.", "info");
+  };
+
+  // Cancel any active scan on category or playlist change
+  useEffect(() => {
+    if (scanState.isScanning) {
+      cancelLivenessScan();
+    }
+  }, [channels, currentCategory]);
+
   /* Init */
   useEffect(() => {
     try {
@@ -321,6 +452,7 @@ export default function IPTVPage() {
       const r = localStorage.getItem("iptv_recents");
       if (r) setRecents(JSON.parse(r));
     } catch {}
+    fetchLocalPlaylists();
     // If sources are configured, merge them all; otherwise fall back to the
     // original single-source default playlist.
     if (IPTV_SOURCES && IPTV_SOURCES.length) fetchMultiplePlaylists(IPTV_SOURCES);
@@ -437,6 +569,80 @@ export default function IPTVPage() {
     reader.readAsText(file);
   };
 
+  const fetchLocalPlaylists = async () => {
+    try {
+      const res = await fetch("/api/playlists");
+      if (res.ok) {
+        const data = await res.json();
+        setLocalPlaylists(data.playlists || []);
+      }
+    } catch (err) {
+      console.error("Failed to load local playlists:", err);
+    }
+  };
+
+  const uploadAndLoadFile = async (file) => {
+    if (!file) return;
+    setIsUploading(true);
+    addToast("Uploading playlist to server...", "info");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Upload failed");
+      }
+
+      const data = await res.json();
+      addToast(`Uploaded ${data.name} successfully!`, "success");
+
+      // Refresh the local files library
+      await fetchLocalPlaylists();
+
+      // Clear the selected file input
+      setSelectedFile(null);
+
+      // Load the newly uploaded playlist
+      setIsModalOpen(false);
+      fetchPlaylist(data.url);
+      setPlaylistUrl(`Local: ${data.name}`);
+    } catch (err) {
+      addToast(`Upload failed: ${err.message}`, "error");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const deleteLocalPlaylist = async (name) => {
+    try {
+      const res = await fetch(`/api/playlists?name=${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        addToast(`Deleted ${name} from server`, "success");
+        fetchLocalPlaylists();
+      } else {
+        const data = await res.json();
+        addToast(`Delete failed: ${data.error}`, "error");
+      }
+    } catch (err) {
+      addToast("Failed to delete file", "error");
+    }
+  };
+
+  useEffect(() => {
+    if (isModalOpen) {
+      fetchLocalPlaylists();
+    }
+  }, [isModalOpen]);
+
   // Keep a ref in sync so the filtered memo can read latest status values
   // without depending on the streamStatus state object — this breaks the
   // feedback loop: streamStatus → filtered → paginated → stream-check effect
@@ -513,6 +719,8 @@ export default function IPTVPage() {
   /* HLS Player */
   useEffect(() => {
     if (!activeChannel) return;
+    setHlsLevels([]);
+    setCurrentLevel(-1);
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
     const video = videoRef.current;
     if (!video) return;
@@ -579,7 +787,16 @@ export default function IPTVPage() {
         });
         hlsRef.current = hls;
         hls.loadSource(proxiedUrl); hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => { if (!cancelled) video.play().catch(() => {}); });
+        hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+          if (cancelled) return;
+          setHlsLevels(hls.levels || []);
+          setCurrentLevel(hls.currentLevel);
+          video.play().catch(() => {});
+        });
+        hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+          if (cancelled) return;
+          setCurrentLevel(hls.currentLevel);
+        });
         hls.on(Hls.Events.ERROR, (_, d) => {
           if (!d.fatal || cancelled) return;
           const isKeyError = d.details === Hls.ErrorDetails.KEY_LOAD_ERROR ||
@@ -613,6 +830,66 @@ export default function IPTVPage() {
 
     return () => { cleanup(); video.removeEventListener("playing", onPlaying); };
   }, [activeChannel]);
+
+  /* Stats for Nerds and Advanced Control Handlers */
+  const handleQualityChange = (levelIndex) => {
+    if (hlsRef.current) {
+      hlsRef.current.currentLevel = levelIndex;
+      setCurrentLevel(levelIndex);
+    }
+  };
+
+  const toggleAspectRatio = () => {
+    setAspectRatio(prev => {
+      if (prev === "contain") return "cover";
+      if (prev === "cover") return "fill";
+      return "contain";
+    });
+  };
+
+  useEffect(() => {
+    if (!isPlaying || !showStats || !videoRef.current) return;
+    const interval = setInterval(() => {
+      const v = videoRef.current;
+      const hls = hlsRef.current;
+      if (!v) return;
+
+      // Calculate buffer length
+      let bufferLen = 0;
+      if (v.buffered && v.buffered.length > 0) {
+        for (let i = 0; i < v.buffered.length; i++) {
+          if (v.currentTime >= v.buffered.start(i) && v.currentTime <= v.buffered.end(i)) {
+            bufferLen = v.buffered.end(i) - v.currentTime;
+            break;
+          }
+        }
+      }
+
+      // Bitrate and resolution
+      let resolution = v.videoWidth ? `${v.videoWidth}x${v.videoHeight}` : "N/A";
+      let bitrate = "N/A";
+
+      if (hls && hls.levels && hls.currentLevel !== undefined && hls.levels[hls.currentLevel]) {
+        const lvl = hls.levels[hls.currentLevel];
+        bitrate = `${(lvl.bitrate / 1000000).toFixed(2)} Mbps`;
+        if (!v.videoWidth && lvl.width) resolution = `${lvl.width}x${lvl.height}`;
+      }
+
+      // Dropped frames
+      let dropped = 0;
+      if (v.getVideoPlaybackQuality) {
+        dropped = v.getVideoPlaybackQuality().droppedVideoFrames;
+      }
+
+      setStats({
+        resolution,
+        bitrate,
+        buffer: bufferLen.toFixed(1),
+        droppedFrames: dropped,
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isPlaying, showStats, activeChannel]);
 
   /* Keyboard */
   useEffect(() => {
@@ -664,6 +941,7 @@ export default function IPTVPage() {
   };
   const playChannel = (ch) => {
     setActiveChannel(ch);
+    setIsSidebarOpen(false); // close drawer on mobile when channel selected
     setRecents(prev => {
       const next = [ch, ...prev.filter(c => c.url !== ch.url)].slice(0, 10);
       localStorage.setItem("iptv_recents", JSON.stringify(next));
@@ -675,7 +953,7 @@ export default function IPTVPage() {
   const ChannelCard = ({ channel, idx }) => {
     const isFav = favorites.includes(channel.url);
     const isActive = activeChannel?.url === channel.url;
-    const status = streamStatus[channel.url] || "checking";
+    const status = streamStatus[channel.url];
     return (
       <div
         key={channel.url + idx}
@@ -693,7 +971,7 @@ export default function IPTVPage() {
         {/* Logo */}
         <div className="relative flex-shrink-0 w-10 h-10 rounded-lg bg-black/30 border border-white/5 flex items-center justify-center overflow-visible">
           <ChannelLogo src={channel.logo} alt={channel.name} className="max-w-full max-h-full object-contain rounded-md" />
-          <span className={`status-dot ${status}`} />
+          {status && <span className={`status-dot ${status}`} />}
         </div>
 
         {/* Info */}
@@ -734,38 +1012,49 @@ export default function IPTVPage() {
       style={{ backgroundImage: "radial-gradient(at 0% 0%, rgba(139,92,246,0.08) 0,transparent 50%), radial-gradient(at 100% 100%, rgba(6,182,212,0.08) 0,transparent 50%)" }}>
 
       {/* ── Header ── */}
-      <header className="flex-shrink-0 flex items-center justify-between h-[68px] px-6 border-b border-white/[0.06] glass bg-[rgba(11,17,30,0.85)] z-50">
-        {/* Left */}
-        <div className="flex items-center gap-3">
-          <div className="relative flex items-center gap-2.5 cursor-pointer">
+      <header className="flex-shrink-0 flex items-center justify-between h-[60px] sm:h-[68px] px-3 sm:px-6 border-b border-white/[0.06] glass bg-[rgba(11,17,30,0.85)] z-50 gap-2">
+        {/* Left: hamburger (mobile) + logo */}
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+          {/* Mobile hamburger */}
+          <button
+            onClick={() => setIsSidebarOpen(v => !v)}
+            className="flex sm:hidden items-center justify-center w-9 h-9 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.07] transition-all"
+            aria-label="Toggle channel list"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="relative flex items-center gap-2 cursor-pointer">
             <div className="logo-glow" />
-            <Tv className="w-6 h-6 text-violet-500 drop-shadow-[0_2px_8px_rgba(139,92,246,0.5)]" />
-            <span className="font-['Outfit'] text-lg font-extrabold tracking-wider">
+            <Tv className="w-5 h-5 sm:w-6 sm:h-6 text-violet-500 drop-shadow-[0_2px_8px_rgba(139,92,246,0.5)]" />
+            <span className="font-['Outfit'] text-base sm:text-lg font-extrabold tracking-wider">
               3S-<span className="text-gradient">IPTV</span>
             </span>
           </div>
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-500/8 border border-cyan-500/20 text-[11px] font-bold uppercase tracking-widest text-cyan-400">
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-500/8 border border-cyan-500/20 text-[11px] font-bold uppercase tracking-widest text-cyan-400">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 relative pulse-dot" />
             iptv-org
           </div>
         </div>
 
-        {/* Search */}
-        <div className="flex-1 max-w-md mx-8">
-          <div className="relative flex items-center">
+        {/* Search — full bar on desktop, expandable on mobile */}
+        <div className={`${
+          isMobileSearchOpen ? "flex flex-1" : "hidden sm:flex flex-1"
+        } max-w-md mx-0 sm:mx-8 transition-all`}>
+          <div className="relative flex items-center w-full">
             <Search className="absolute left-3.5 w-4 h-4 text-slate-500 pointer-events-none" />
             <input
               id="channel-search"
               type="text"
               value={searchQuery}
               onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
-              placeholder="Search channels, categories, countries…"
+              placeholder="Search channels…"
               autoComplete="off"
+              autoFocus={isMobileSearchOpen}
               className="w-full h-10 bg-white/[0.04] border border-white/[0.07] rounded-xl pl-10 pr-10 text-sm text-slate-200 placeholder:text-slate-500
                 focus:outline-none focus:bg-white/[0.08] focus:border-violet-500 focus:shadow-[0_0_0_3px_rgba(139,92,246,0.15)] transition-all"
             />
-            {searchQuery && (
-              <button onClick={() => { setSearchQuery(""); setPage(1); }}
+            {(searchQuery || isMobileSearchOpen) && (
+              <button onClick={() => { setSearchQuery(""); setPage(1); setIsMobileSearchOpen(false); }}
                 className="absolute right-3 text-slate-400 hover:text-slate-200 p-0.5 rounded-full hover:bg-white/10 transition-all">
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -774,34 +1063,59 @@ export default function IPTVPage() {
         </div>
 
         {/* Right */}
-        <div className="flex items-center gap-2.5">
-          <div className="flex items-center gap-2 px-3.5 py-2 bg-white/[0.04] border border-white/[0.06] rounded-xl text-sm font-medium text-slate-400">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 flex-shrink-0">
+          {/* Mobile search toggle */}
+          {!isMobileSearchOpen && (
+            <button
+              onClick={() => setIsMobileSearchOpen(true)}
+              className="flex sm:hidden items-center justify-center w-9 h-9 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.07] transition-all"
+              aria-label="Search"
+            >
+              <Search className="w-4.5 h-4.5" />
+            </button>
+          )}
+          <div className="hidden sm:flex items-center gap-2 px-3.5 py-2 bg-white/[0.04] border border-white/[0.06] rounded-xl text-sm font-medium text-slate-400">
             <span className="relative w-2 h-2 flex-shrink-0">
               <span className="w-2 h-2 rounded-full bg-emerald-400 block" />
               <span className="absolute inset-0 rounded-full bg-emerald-400 pulse-dot" />
             </span>
             {isPlaylistLoading
-              ? (multiLoadProgress ? `Loading ${multiLoadProgress.done}/${multiLoadProgress.total}…` : "Loading…")
-              : `${channels.length.toLocaleString()} Channels`}
+              ? (multiLoadProgress ? `${multiLoadProgress.done}/${multiLoadProgress.total}` : "Loading…")
+              : `${channels.length.toLocaleString()} Ch`}
           </div>
           <button onClick={() => setIsBrowseOpen(true)}
-            className="flex items-center gap-2 h-10 px-4 rounded-xl border border-white/[0.07] bg-transparent text-slate-400 text-sm font-semibold
+            className="flex items-center gap-1.5 sm:gap-2 h-9 sm:h-10 px-2.5 sm:px-4 rounded-xl border border-white/[0.07] bg-transparent text-slate-400 text-xs sm:text-sm font-semibold
               hover:bg-white/[0.06] hover:border-white/[0.12] hover:text-slate-200 transition-all">
-            <Tag className="w-4 h-4" /><span>Browse</span>
+            <Tag className="w-4 h-4" /><span className="hidden sm:inline">Browse</span>
           </button>
           <button onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 h-10 px-4 rounded-xl border border-white/[0.07] bg-white/[0.04] text-slate-300 text-sm font-semibold
+            className="flex items-center gap-1.5 sm:gap-2 h-9 sm:h-10 px-2.5 sm:px-4 rounded-xl border border-white/[0.07] bg-white/[0.04] text-slate-300 text-xs sm:text-sm font-semibold
               hover:bg-white/[0.09] hover:border-white/[0.14] transition-all">
-            <Settings className="w-4 h-4" /><span>Playlist</span>
+            <Settings className="w-4 h-4" /><span className="hidden sm:inline">Playlist</span>
           </button>
         </div>
       </header>
 
       {/* ── Body ── */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden relative">
+
+        {/* Mobile sidebar backdrop */}
+        {isSidebarOpen && (
+          <div
+            className="fixed inset-0 z-20 bg-black/60 backdrop-blur-sm sm:hidden"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
 
         {/* ── Sidebar ── */}
-        <aside className="w-[360px] min-w-[360px] flex flex-col border-r border-white/[0.06] glass bg-[rgba(15,23,42,0.8)] overflow-hidden z-10">
+        <aside className={`
+          flex flex-col border-r border-white/[0.06] glass bg-[rgba(15,23,42,0.95)] overflow-hidden z-30
+          fixed sm:relative inset-y-0 left-0
+          w-[320px] sm:w-[360px] min-w-0 sm:min-w-[360px]
+          transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+          ${isSidebarOpen ? "translate-x-0" : "-translate-x-full sm:translate-x-0"}
+          top-[60px] sm:top-0 h-[calc(100%-60px)] sm:h-full
+        `}>
 
           {/* Tabs */}
           <div className="flex border-b border-white/[0.06] px-3 pt-3 gap-1">
@@ -818,6 +1132,14 @@ export default function IPTVPage() {
                 {t.icon}{t.label}
               </button>
             ))}
+            {/* Mobile-only close button */}
+            <button
+              onClick={() => setIsSidebarOpen(false)}
+              className="flex sm:hidden items-center justify-center w-9 h-9 mb-0.5 self-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-white/[0.05] transition-all flex-shrink-0"
+              aria-label="Close panel"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Channels Panel */}
@@ -863,6 +1185,68 @@ export default function IPTVPage() {
                   </button>
                 </div>
               </div>
+
+              {/* Liveness Scanner Control */}
+              <div className="px-4 py-2 border-b border-white/[0.04] bg-slate-900/20 flex flex-col gap-2">
+                {scanState.isScanning ? (
+                  <div className="flex flex-col gap-1.5 text-[11px] animate-[fadeIn_0.2s_ease]">
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span className="font-semibold flex items-center gap-1.5">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-violet-400" />
+                        Checking liveness ({scanState.checkedCount}/{scanState.totalCount})
+                      </span>
+                      <button
+                        onClick={cancelLivenessScan}
+                        className="text-red-400 hover:text-red-300 font-bold hover:underline transition-all"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {/* Progress Bar */}
+                    <div className="w-full bg-white/5 rounded-full h-1.5 overflow-hidden border border-white/[0.03]">
+                      <div
+                        className="bg-gradient-to-r from-violet-500 to-cyan-500 h-full transition-all duration-300"
+                        style={{ width: `${(scanState.checkedCount / scanState.totalCount) * 100}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        {scanState.onlineCount} Active
+                      </span>
+                      <span className="text-red-400 font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                        {scanState.offlineCount} Offline
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-[11px] text-slate-400">
+                    <span className="font-semibold flex items-center gap-1">
+                      <Zap className="w-3 h-3 text-violet-400" /> Scan Liveness:
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => startLivenessScan(filtered)}
+                        disabled={filtered.length === 0}
+                        className="flex-1 sm:flex-none px-2 py-0.5 rounded bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 text-white font-semibold transition-all shadow-[0_2px_6px_rgba(139,92,246,0.15)] text-center text-[10px]"
+                        title="Scan channels matching current search/filters"
+                      >
+                        Scan Filtered ({filtered.length})
+                      </button>
+                      <button
+                        onClick={() => startLivenessScan(channels)}
+                        disabled={channels.length === 0}
+                        className="flex-1 sm:flex-none px-2 py-0.5 rounded border border-white/10 hover:bg-white/5 hover:border-white/20 disabled:opacity-50 text-slate-300 font-medium transition-all text-center text-[10px]"
+                        title="Scan all channels in the playlist"
+                      >
+                        Scan All ({channels.length})
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Quick Tags / Trending Searches */}
               <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-white/[0.03] bg-slate-900/20 overflow-x-auto scrollbar-none text-[10px] select-none">
                 <span className="text-slate-500 font-semibold uppercase flex-shrink-0 mr-1">Trending:</span>
@@ -969,17 +1353,32 @@ export default function IPTVPage() {
         </aside>
 
         {/* ── Main Content ── */}
-        <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden p-5 gap-4"
+        <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden p-3 sm:p-5 gap-3 sm:gap-4"
           style={{ background: "radial-gradient(circle at top right, rgba(139,92,246,0.05) 0%, transparent 60%)" }}>
 
           {/* Player */}
           <div ref={playerContainerRef}
-            className="player-container relative w-full flex-shrink-0 bg-black rounded-2xl overflow-hidden border border-white/[0.06] shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
-            style={{ aspectRatio: "16/9", maxHeight: "calc(100vh - 68px - 220px)" }}
+            className="player-container relative w-full flex-shrink-0 bg-black rounded-xl sm:rounded-2xl overflow-hidden border border-white/[0.06] shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+            style={{ aspectRatio: "16/9", maxHeight: "calc(100svh - 60px - 180px)" }}
             onDoubleClick={toggleFullscreen}>
 
             {/* Video */}
-            <video ref={videoRef} playsInline className="player-video" />
+            <video ref={videoRef} playsInline className="player-video" style={{ objectFit: aspectRatio }} />
+
+            {/* Stats for Nerds HUD */}
+            {showStats && activeChannel && isPlaying && (
+              <div className="absolute top-3 left-3 z-30 bg-slate-950/85 backdrop-blur-md border border-white/10 rounded-xl p-3 text-[10px] font-mono text-slate-300 flex flex-col gap-1 shadow-2xl max-w-[220px] pointer-events-none select-none animate-[fadeIn_0.2s_ease]">
+                <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-1">
+                  <span className="font-semibold text-violet-400 uppercase tracking-wider text-[9px]">Stats for Nerds</span>
+                  <span className="text-[8px] bg-emerald-500/20 text-emerald-400 px-1 rounded font-bold uppercase tracking-wider">Active</span>
+                </div>
+                <div className="flex justify-between"><span className="text-slate-500 font-medium">Resolution:</span> <span className="font-bold text-slate-200">{stats.resolution}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500 font-medium">Bitrate:</span> <span className="font-bold text-slate-200">{stats.bitrate}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500 font-medium">Buffer Length:</span> <span className="font-bold text-slate-200">{stats.buffer}s</span></div>
+                <div className="flex justify-between"><span className="text-slate-500 font-medium">Dropped Frames:</span> <span className="font-bold text-slate-200">{stats.droppedFrames}</span></div>
+                <div className="flex justify-between truncate gap-2"><span className="text-slate-500 font-medium">Host:</span> <span className="font-bold text-slate-200 truncate">{activeChannel.url.split("/")[2]}</span></div>
+              </div>
+            )}
 
             {/* Overlay: idle */}
             {!activeChannel && (
@@ -1096,11 +1495,56 @@ export default function IPTVPage() {
                     </div>
                     <span className="ml-2 text-sm font-semibold text-white truncate max-w-[240px]">{activeChannel.name}</span>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <button onClick={togglePip} className="w-9 h-9 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all">
+                  <div className="flex items-center gap-1 sm:gap-2">
+                    {/* Aspect Ratio selector */}
+                    <button
+                      onClick={toggleAspectRatio}
+                      title={`Aspect Ratio: ${aspectRatio === "contain" ? "Fit" : aspectRatio === "cover" ? "Zoom" : "Stretch"}`}
+                      className="h-9 px-2 text-[10px] font-extrabold tracking-wider uppercase rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all"
+                    >
+                      {aspectRatio === "contain" ? "Fit" : aspectRatio === "cover" ? "Zoom" : "Stretch"}
+                    </button>
+
+                    {/* HLS quality selector */}
+                    {hlsLevels.length > 0 && (
+                      <div className="relative group">
+                        <button className="h-9 px-2 flex items-center gap-1 text-[10px] font-extrabold tracking-wider rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all">
+                          <Settings className="w-3.5 h-3.5 animate-[spin_8s_linear_infinite]" />
+                          {currentLevel === -1 ? "Auto" : `${hlsLevels[currentLevel]?.height || "N/A"}p`}
+                        </button>
+                        <div className="absolute bottom-full right-0 mb-1.5 hidden group-hover:block bg-slate-950/95 border border-white/10 rounded-xl p-1 min-w-[85px] z-50 text-[10px] shadow-[0_8px_32px_rgba(0,0,0,0.8)] backdrop-blur-md">
+                          <button
+                            onClick={() => handleQualityChange(-1)}
+                            className={`w-full text-left px-2 py-1.5 rounded-lg transition-all font-semibold ${currentLevel === -1 ? "text-violet-400 bg-violet-500/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"}`}
+                          >
+                            Auto
+                          </button>
+                          {hlsLevels.map((lvl, index) => (
+                            <button
+                              key={index}
+                              onClick={() => handleQualityChange(index)}
+                              className={`w-full text-left px-2 py-1.5 rounded-lg transition-all font-semibold ${currentLevel === index ? "text-violet-400 bg-violet-500/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"}`}
+                            >
+                              {lvl.height ? `${lvl.height}p` : `${(lvl.bitrate / 1000).toFixed(0)}k`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Stats for nerds toggle */}
+                    <button
+                      onClick={() => setShowStats(!showStats)}
+                      title="Stats for Nerds"
+                      className={`w-9 h-9 flex items-center justify-center rounded-lg hover:bg-white/15 transition-all ${showStats ? "text-violet-400 bg-violet-500/10" : "text-white"}`}
+                    >
+                      <Activity className="w-4.5 h-4.5" />
+                    </button>
+
+                    <button onClick={togglePip} className="w-9 h-9 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all" title="Picture in Picture">
                       <PictureInPicture2 className="w-5 h-5" />
                     </button>
-                    <button onClick={toggleFullscreen} className="w-9 h-9 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all">
+                    <button onClick={toggleFullscreen} className="w-9 h-9 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all" title="Fullscreen">
                       <Maximize className="w-5 h-5" />
                     </button>
                   </div>
@@ -1111,37 +1555,37 @@ export default function IPTVPage() {
 
           {/* Channel Details */}
           {activeChannel && (
-            <div className="flex-shrink-0 flex items-center justify-between flex-wrap gap-3 px-5 py-4 bg-slate-800/40 border border-white/[0.06] rounded-2xl animate-[fadeUp_0.4s_ease]">
-              <div className="flex items-center gap-4 overflow-hidden">
-                <div className="w-14 h-14 flex-shrink-0 rounded-xl bg-black/30 border border-white/[0.08] flex items-center justify-center overflow-hidden">
+            <div className="flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-3 sm:px-5 py-3 sm:py-4 bg-slate-800/40 border border-white/[0.06] rounded-xl sm:rounded-2xl animate-[fadeUp_0.4s_ease]">
+              <div className="flex items-center gap-3 sm:gap-4 overflow-hidden">
+                <div className="w-11 h-11 sm:w-14 sm:h-14 flex-shrink-0 rounded-xl bg-black/30 border border-white/[0.08] flex items-center justify-center overflow-hidden">
                   <ChannelLogo src={activeChannel.logo} alt={activeChannel.name} className="max-w-[80%] max-h-[80%] object-contain" />
                 </div>
-                <div className="overflow-hidden">
-                  <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-300">{activeChannel.group}</span>
+                <div className="overflow-hidden flex-1">
+                  <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 mb-1">
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-300 truncate max-w-[120px]">{activeChannel.group}</span>
                     {activeChannel.country && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">{flagEmoji(activeChannel.country)} {activeChannel.country.toUpperCase()}</span>}
-                    {activeChannel.isGeoBlocked && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400">Geo-blocked</span>}
+                    {activeChannel.isGeoBlocked && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400">Geo</span>}
                   </div>
-                  <h2 className="font-['Outfit'] text-lg font-bold text-slate-100 truncate">{activeChannel.name}</h2>
+                  <h2 className="font-['Outfit'] text-base sm:text-lg font-bold text-slate-100 truncate">{activeChannel.name}</h2>
                   <p className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
-                    <Globe className="w-3.5 h-3.5" />
-                    <span className="truncate max-w-xs" title={activeChannel.url}>{activeChannel.url.split("/")[2]}</span>
+                    <Globe className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="truncate max-w-[180px] sm:max-w-xs" title={activeChannel.url}>{activeChannel.url.split("/")[2]}</span>
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={() => toggleFav(activeChannel)}
-                  className={`flex items-center gap-1.5 h-9 px-4 rounded-xl text-xs font-bold border transition-all
+                  className={`flex items-center gap-1.5 h-9 px-3 sm:px-4 rounded-xl text-xs font-bold border transition-all
                     ${favorites.includes(activeChannel.url) ? "bg-red-500/10 border-red-500/25 text-red-400" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:border-white/[0.12] hover:text-slate-200"}`}>
                   <Heart className="w-3.5 h-3.5" fill={favorites.includes(activeChannel.url) ? "currentColor" : "none"} />
-                  {favorites.includes(activeChannel.url) ? "Favorited" : "Favorite"}
+                  <span className="hidden xs:inline">{favorites.includes(activeChannel.url) ? "Favorited" : "Favorite"}</span>
                 </button>
                 <button onClick={copyUrl}
-                  className="flex items-center gap-1.5 h-9 px-4 rounded-xl text-xs font-bold bg-white/[0.03] border border-white/[0.07] text-slate-400 hover:border-white/[0.12] hover:text-slate-200 transition-all">
-                  <Copy className="w-3.5 h-3.5" /> Copy URL
+                  className="flex items-center gap-1.5 h-9 px-3 sm:px-4 rounded-xl text-xs font-bold bg-white/[0.03] border border-white/[0.07] text-slate-400 hover:border-white/[0.12] hover:text-slate-200 transition-all">
+                  <Copy className="w-3.5 h-3.5" /><span className="hidden sm:inline"> Copy URL</span>
                 </button>
                 <a href={activeChannel.url.replace(/^https?:\/\//, "vlc://")}
-                  className="flex items-center gap-1.5 h-9 px-4 rounded-xl text-xs font-bold bg-cyan-500/[0.05] border border-cyan-500/15 text-cyan-400 hover:bg-cyan-500/12 transition-all">
+                  className="flex items-center gap-1.5 h-9 px-3 sm:px-4 rounded-xl text-xs font-bold bg-cyan-500/[0.05] border border-cyan-500/15 text-cyan-400 hover:bg-cyan-500/12 transition-all">
                   <ExternalLink className="w-3.5 h-3.5" /> VLC
                 </a>
               </div>
@@ -1159,7 +1603,7 @@ export default function IPTVPage() {
                 No recently viewed channels. Select a stream to start watching.
               </div>
             ) : (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2 sm:gap-3">
                 {recents.map((ch, i) => <ChannelCard key={ch.url + "recent" + i} channel={ch} idx={i} />)}
               </div>
             )}
@@ -1227,8 +1671,9 @@ export default function IPTVPage() {
             </div>
 
             {/* Modal tabs */}
-            <div className="flex gap-1 p-1.5 mx-6 mt-5 bg-black/25 rounded-xl border border-white/[0.06]">
+            <div className="flex gap-1.5 p-1.5 mx-6 mt-5 bg-black/25 rounded-xl border border-white/[0.06] overflow-x-auto scrollbar-none whitespace-nowrap">
               {[
+                { id: "sources",  icon: <Tv className="w-3.5 h-3.5" />, label: "All Sources" },
                 { id: "category", icon: <Tag className="w-3.5 h-3.5" />, label: "Category" },
                 { id: "language", icon: <Languages className="w-3.5 h-3.5" />, label: "Language" },
                 { id: "country",  icon: <MapPin className="w-3.5 h-3.5" />, label: "Country" },
@@ -1236,7 +1681,7 @@ export default function IPTVPage() {
                 { id: "file",     icon: <UploadCloud className="w-3.5 h-3.5" />, label: "Upload" },
               ].map(t => (
                 <button key={t.id} onClick={() => setModalTab(t.id)}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-1 rounded-lg text-[11px] font-semibold transition-all
+                  className={`flex-1 flex-shrink-0 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-[11px] font-semibold transition-all
                     ${modalTab === t.id ? "bg-violet-500/15 text-violet-300 border border-violet-500/30" : "text-slate-500 hover:text-slate-300"}`}>
                   {t.icon}{t.label}
                 </button>
@@ -1245,6 +1690,91 @@ export default function IPTVPage() {
 
             {/* Modal body */}
             <div className="px-6 py-4 max-h-[380px] overflow-y-auto">
+              {modalTab === "sources" && (
+                <div className="flex flex-col gap-3">
+                  <p className="text-xs text-slate-500">Select any single stream source or load all configured playlists combined.</p>
+                  
+                  {/* Load All Sources combined & Upload Local File */}
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <button
+                      onClick={() => {
+                        setIsModalOpen(false);
+                        const allSources = [
+                          ...IPTV_SOURCES,
+                          ...localPlaylists.map(pl => ({ name: pl.name, url: pl.url }))
+                        ];
+                        fetchMultiplePlaylists(allSources);
+                      }}
+                      className="flex-1 flex items-center gap-3 p-3.5 rounded-xl border border-violet-500/30 bg-gradient-to-r from-violet-500/15 to-cyan-500/10 hover:from-violet-500/20 hover:to-cyan-500/15 hover:border-violet-500/50 shadow-md transition-all text-left hover:-translate-y-px"
+                    >
+                      <Zap className="w-5 h-5 text-violet-400 flex-shrink-0 animate-[pulseIcon_1.5s_infinite]" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-100">⚡ Combine All Sources</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Merge all {IPTV_SOURCES.length + localPlaylists.length} sources together</p>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setModalTab("file");
+                        setTimeout(() => fileInputRef.current?.click(), 100);
+                      }}
+                      className="flex-1 flex items-center gap-3 p-3.5 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-violet-500/5 hover:border-violet-500/20 shadow-md transition-all text-left hover:-translate-y-px"
+                    >
+                      <UploadCloud className="w-5 h-5 text-violet-400 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-100">📂 Upload M3U File</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Upload a local playlist file to server</p>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Individual Sources List */}
+                  <div className="flex flex-col gap-2 mt-2">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Individual Playlists</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {/* Config Sources */}
+                      {IPTV_SOURCES.map(src => (
+                        <button
+                          key={src.url}
+                          onClick={() => {
+                            setIsModalOpen(false);
+                            fetchPlaylist(src.url);
+                            setPlaylistUrl(src.name);
+                          }}
+                          className="flex items-center gap-2.5 p-3 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-violet-500/5 hover:border-violet-500/20 transition-all text-left group"
+                        >
+                          <Tv className="w-4 h-4 text-slate-500 group-hover:text-violet-400 transition-colors flex-shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-slate-200 group-hover:text-white truncate">{src.name}</p>
+                            <p className="text-[10px] text-slate-500 truncate" title={src.url}>{src.url.split("/")[2] || "Config Source"}</p>
+                          </div>
+                        </button>
+                      ))}
+
+                      {/* Uploaded Local Playlists */}
+                      {localPlaylists.map(pl => (
+                        <button
+                          key={pl.url}
+                          onClick={() => {
+                            setIsModalOpen(false);
+                            fetchPlaylist(pl.url);
+                            setPlaylistUrl(`Local: ${pl.name}`);
+                          }}
+                          className="flex items-center gap-2.5 p-3 rounded-xl border border-violet-500/10 bg-violet-500/[0.02] hover:bg-violet-500/10 hover:border-violet-500/30 transition-all text-left group"
+                        >
+                          <FileText className="w-4 h-4 text-violet-400 group-hover:text-violet-300 transition-colors flex-shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-slate-200 group-hover:text-white truncate">{pl.name}</p>
+                            <p className="text-[10px] text-violet-400 font-medium truncate">Uploaded File ({(pl.size / 1024).toFixed(0)} KB)</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {modalTab === "category" && (
                 <div className="flex flex-col gap-3">
                   <p className="text-xs text-slate-500">Browse channels from <strong className="text-slate-300">iptv-org</strong> grouped by category.</p>
@@ -1346,23 +1876,82 @@ export default function IPTVPage() {
 
               {modalTab === "file" && (
                 <div className="flex flex-col gap-4">
-                  <p className="text-xs text-slate-500">Upload your own M3U playlist file.</p>
+                  <p className="text-xs text-slate-500">Upload M3U playlists to save them on the server or browse saved playlists.</p>
                   <div onClick={() => fileInputRef.current?.click()}
                     onDragOver={e => e.preventDefault()}
                     onDrop={e => { e.preventDefault(); if (e.dataTransfer.files[0]) setSelectedFile(e.dataTransfer.files[0]); }}
-                    className="flex flex-col items-center gap-3 p-8 rounded-xl border-2 border-dashed border-white/10 bg-white/[0.02] cursor-pointer hover:border-violet-500/40 hover:bg-violet-500/5 transition-all">
-                    <Upload className="w-10 h-10 text-slate-600" />
-                    <p className="text-sm text-slate-400">Drag & drop your <strong className="text-slate-300">.m3u</strong> file</p>
-                    <span className="text-xs text-slate-600">or click to browse</span>
+                    className="flex flex-col items-center gap-3 p-6 rounded-xl border-2 border-dashed border-white/10 bg-white/[0.02] cursor-pointer hover:border-violet-500/40 hover:bg-violet-500/5 transition-all">
+                    <Upload className="w-8 h-8 text-slate-600" />
+                    <p className="text-xs text-slate-400">Drag & drop your <strong className="text-slate-300">.m3u</strong> file</p>
+                    <span className="text-[10px] text-slate-600">or click to browse</span>
                     <input ref={fileInputRef} type="file" accept=".m3u,.m3u8" className="hidden" onChange={e => { if (e.target.files[0]) setSelectedFile(e.target.files[0]); }} />
                   </div>
+                  
                   {selectedFile && (
-                    <div className="flex items-center gap-3 px-4 py-3 bg-white/[0.03] border border-white/[0.07] rounded-xl">
-                      <FileText className="w-4 h-4 text-violet-400" />
-                      <span className="text-sm text-slate-300 flex-1 truncate">{selectedFile.name}</span>
-                      <button onClick={() => setSelectedFile(null)} className="text-slate-500 hover:text-red-400 transition-all"><Trash2 className="w-4 h-4" /></button>
+                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-white/[0.03] border border-white/[0.07] rounded-xl">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <FileText className="w-4 h-4 text-violet-400 flex-shrink-0" />
+                        <span className="text-xs font-semibold text-slate-300 truncate flex-1">{selectedFile.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={isUploading}
+                          onClick={() => uploadAndLoadFile(selectedFile)}
+                          className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-bold transition-all"
+                        >
+                          {isUploading ? "Uploading..." : "Upload & Save"}
+                        </button>
+                        <button
+                          disabled={isUploading}
+                          onClick={() => setSelectedFile(null)}
+                          className="p-1 rounded text-slate-500 hover:text-red-400 transition-all"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   )}
+
+                  {/* Upload library stored on server */}
+                  <div className="flex flex-col gap-2 mt-1">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Saved Playlists on Server</p>
+                    {localPlaylists.length === 0 ? (
+                      <p className="text-xs text-slate-600 italic">No playlists saved on server yet.</p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto pr-1">
+                        {localPlaylists.map(pl => (
+                          <div key={pl.name} className="flex items-center justify-between p-2.5 rounded-xl border border-white/[0.05] bg-white/[0.01] hover:bg-white/[0.03] transition-all">
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                              <FileText className="w-4 h-4 text-violet-400 flex-shrink-0" />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-semibold text-slate-200 truncate">{pl.name}</p>
+                                <p className="text-[10px] text-slate-500">{(pl.size / 1024).toFixed(1)} KB</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 ml-3">
+                              <button
+                                onClick={() => {
+                                  setIsModalOpen(false);
+                                  fetchPlaylist(pl.url);
+                                  setPlaylistUrl(`Local: ${pl.name}`);
+                                }}
+                                className="px-2.5 py-1 rounded bg-violet-600/80 hover:bg-violet-600 text-white text-[10px] font-bold transition-all"
+                              >
+                                Load
+                              </button>
+                              <button
+                                onClick={() => deleteLocalPlaylist(pl.name)}
+                                className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                                title="Delete from server"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

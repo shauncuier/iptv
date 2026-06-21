@@ -1,9 +1,65 @@
+import dns from "dns";
+import net from "net";
+
 /**
  * /api/proxy?url=<encoded-url>
  *
  * Universal server-side proxy: handles both text (M3U playlists, HLS keys)
  * and binary (images) responses, bypassing CORS / CORP / 403 blocks.
  */
+
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  if (net.isIPv4(ip)) {
+    const parts = ip.split(".").map(Number);
+    if (parts[0] === 127) return true;
+    if (parts[0] === 10) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 0) return true;
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const normalized = ip.toLowerCase();
+    if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
+    if (normalized.startsWith("fe80:") || normalized.startsWith("fe80::")) return true;
+    if (normalized.startsWith("fc00:") || normalized.startsWith("fd00:")) return true;
+    if (normalized === "::" || normalized === "0:0:0:0:0:0:0:0") return true;
+    return false;
+  }
+  return true;
+}
+
+async function isPrivateHostname(hostname) {
+  const lower = hostname.toLowerCase();
+  if (
+    lower === "localhost" ||
+    lower === "localhost.localdomain" ||
+    lower.endsWith(".local") ||
+    lower.endsWith(".internal") ||
+    lower.endsWith(".test") ||
+    lower.endsWith(".invalid") ||
+    lower.endsWith(".example")
+  ) {
+    return true;
+  }
+  if (net.isIP(hostname)) {
+    return isPrivateIp(hostname);
+  }
+  try {
+    const address = await new Promise((resolve, reject) => {
+      dns.lookup(hostname, (err, addr) => {
+        if (err) reject(err);
+        else resolve(addr);
+      });
+    });
+    return isPrivateIp(address);
+  } catch {
+    return false;
+  }
+}
+
 
 // HLS streaming tags. Their presence marks a real HLS playlist (master or
 // media) — as opposed to an IPTV channel-list .m3u, which we must NOT rewrite.
@@ -73,6 +129,41 @@ export async function GET(request) {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
+  }
+  // SSRF Protection: block access to private/local hostnames
+  const isSSRF = await isPrivateHostname(parsed.hostname);
+  if (isSSRF) {
+    return new Response(JSON.stringify({ error: "Access Denied: Private network resources cannot be accessed." }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // Hotlinking Protection: block cross-origin calls if Referer or Origin is specified and doesn't match
+  const referer = request.headers.get("referer");
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("host");
+
+  if (referer) {
+    try {
+      const refUrl = new URL(referer);
+      if (refUrl.host !== host) {
+        return new Response(JSON.stringify({ error: "Access Denied: Cross-origin proxy requests are prohibited." }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    } catch {}
+  } else if (origin) {
+    try {
+      const origUrl = new URL(origin);
+      if (origUrl.host !== host) {
+        return new Response(JSON.stringify({ error: "Access Denied: Cross-origin proxy requests are prohibited." }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    } catch {}
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
