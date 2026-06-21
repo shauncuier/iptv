@@ -52,10 +52,10 @@ export default function PlaylistModal(props: PlaylistModalProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-[rgba(3,7,18,0.75)] backdrop-blur-lg">
-      <div className="w-full max-w-xl bg-[#0d131f] border border-white/10 rounded-2xl shadow-[0_16px_48px_rgba(0,0,0,0.6),0_0_30px_rgba(139,92,246,0.15)] overflow-hidden animate-[fadeUp_0.25s_ease]">
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-[rgba(3,7,18,0.75)] backdrop-blur-lg">
+      <div className="w-full max-w-xl max-h-[90dvh] flex flex-col bg-[#0d131f] border border-white/10 rounded-2xl shadow-[0_16px_48px_rgba(0,0,0,0.6),0_0_30px_rgba(139,92,246,0.15)] overflow-hidden animate-[fadeUp_0.25s_ease]">
         {/* Modal header */}
-        <div className="flex items-center justify-between px-6 py-5 border-b border-white/[0.07]">
+        <div className="flex-shrink-0 flex items-center justify-between px-6 py-5 border-b border-white/[0.07]">
           <h3 className="flex items-center gap-2.5 font-['Outfit'] text-lg font-bold">
             <Settings className="w-5 h-5 text-violet-400" /> IPTV Playlist Manager
           </h3>
@@ -63,7 +63,7 @@ export default function PlaylistModal(props: PlaylistModalProps) {
         </div>
 
         {/* Modal tabs */}
-        <div className="flex gap-1.5 p-1.5 mx-6 mt-5 bg-black/25 rounded-xl border border-white/[0.06] overflow-x-auto scrollbar-none whitespace-nowrap">
+        <div className="flex-shrink-0 flex gap-1.5 p-1.5 mx-6 mt-5 bg-black/25 rounded-xl border border-white/[0.06] overflow-x-auto scrollbar-none whitespace-nowrap">
           {[
             { id: "sources", icon: <Tv className="w-3.5 h-3.5" />, label: "All Sources" },
             { id: "category", icon: <Tag className="w-3.5 h-3.5" />, label: "Category" },
@@ -81,7 +81,7 @@ export default function PlaylistModal(props: PlaylistModalProps) {
         </div>
 
         {/* Modal body */}
-        <div className="px-6 py-4 max-h-[380px] overflow-y-auto">
+        <div className="px-6 py-4 flex-1 min-h-0 max-h-[55dvh] sm:max-h-[380px] overflow-y-auto">
           {modalTab === "sources" && (
             <div className="flex flex-col gap-3">
               <p className="text-xs text-slate-500">Select any single stream source or load all configured playlists combined.</p>
@@ -321,7 +321,7 @@ export default function PlaylistModal(props: PlaylistModalProps) {
         </div>
 
         {/* Modal footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-white/[0.06]">
+        <div className="flex-shrink-0 flex items-center justify-end gap-3 px-6 py-4 border-t border-white/[0.06]">
           <button onClick={onClose}
             className="h-10 px-5 rounded-xl text-sm font-semibold border border-white/[0.07] text-slate-400 hover:border-white/[0.12] hover:text-slate-200 transition-all">
             Cancel

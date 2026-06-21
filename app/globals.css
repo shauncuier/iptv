@@ -71,6 +71,15 @@
 
   a { color: inherit; text-decoration: none; }
 
+  /* Notch clearance: push header content below the status bar on devices that
+     report a top inset (PWA / fullscreen / viewport-fit=cover). No-op elsewhere. */
+  .app-header { padding-top: env(safe-area-inset-top, 0px); }
+
+  /* Prevent iOS from auto-zooming form fields with <16px text on focus. */
+  @media (max-width: 640px) {
+    input, select, textarea { font-size: 16px; }
+  }
+
   button, input, select {
     font-family: inherit;
     color: inherit;

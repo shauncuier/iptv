@@ -611,11 +611,11 @@ export default function IPTVPage() {
      Render
      ========================================================================== */
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#080c14] text-slate-100"
+    <div className="flex flex-col h-[100dvh] w-full overflow-hidden bg-[#080c14] text-slate-100"
       style={{ backgroundImage: "radial-gradient(at 0% 0%, rgba(139,92,246,0.08) 0,transparent 50%), radial-gradient(at 100% 100%, rgba(6,182,212,0.08) 0,transparent 50%)" }}>
 
       {/* ── Header ── */}
-      <header className="flex-shrink-0 flex items-center justify-between h-[60px] sm:h-[68px] px-3 sm:px-6 border-b border-white/[0.06] glass bg-[rgba(11,17,30,0.85)] z-50 gap-2">
+      <header className="app-header flex-shrink-0 flex items-center justify-between min-h-[60px] sm:min-h-[68px] px-3 sm:px-6 border-b border-white/[0.06] glass bg-[rgba(11,17,30,0.85)] z-50 gap-2">
         {/* Left: hamburger (mobile) + logo */}
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
           {/* Mobile hamburger */}
@@ -1124,7 +1124,7 @@ export default function IPTVPage() {
       />
 
       {/* ── Toast Notifications ── */}
-      <div className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 pointer-events-none">
+      <div className="fixed right-5 z-[9999] flex flex-col gap-2 pointer-events-none bottom-[calc(1.25rem+env(safe-area-inset-bottom))]">
         {toasts.map(t => (
           <div key={t.id} className={`flex items-center gap-3 px-4 py-3 rounded-xl shadow-xl border text-sm font-medium animate-[fadeUp_0.25s_ease] pointer-events-auto
             ${t.type === "success" ? "bg-emerald-500/15 border-emerald-500/25 text-emerald-300"

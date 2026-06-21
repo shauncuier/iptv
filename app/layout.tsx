@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Outfit } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
@@ -17,6 +17,15 @@ export const metadata: Metadata = {
   title: "3S-IPTV — Free Live TV Powered by iptv-org",
   description:
     "Stream 8,000+ free live TV channels from iptv-org.github.io. Browse by category, language, or country. Powered by HLS.js and Next.js.",
+};
+
+// viewport-fit=cover enables env(safe-area-inset-*) on notched phones; theme
+// color tints the mobile browser chrome to match the app background.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#080c14",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
