@@ -5,12 +5,44 @@
  * and binary (images) responses, bypassing CORS / CORP / 403 blocks.
  */
 
-// Image content-types we forward as binary (not text)
-const IMAGE_TYPES = new Set([
-  "image/png", "image/jpeg", "image/jpg", "image/gif",
-  "image/webp", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon",
-  "image/avif", "image/bmp",
+// HLS streaming tags. Their presence marks a real HLS playlist (master or
+// media) — as opposed to an IPTV channel-list .m3u, which we must NOT rewrite.
+const HLS_TAG_RE = /#EXT-X-(STREAM-INF|TARGETDURATION|MEDIA|KEY|MAP|PART|I-FRAME-STREAM-INF)/;
+
+// Content-types / extensions that may carry a text playlist worth inspecting.
+const PLAYLIST_TYPES = new Set([
+  "application/vnd.apple.mpegurl", "application/x-mpegurl",
+  "audio/mpegurl", "audio/x-mpegurl", "application/mpegurl",
 ]);
+
+/**
+ * Rewrite every URL inside an HLS playlist so child requests (variant
+ * playlists, segments, AES keys, init maps) flow back through THIS proxy.
+ * Without this the browser fetches segments cross-origin and CORS blocks them.
+ * Relative URLs resolve against `baseUrl` (the real upstream URL, post-redirect).
+ */
+function rewriteHlsPlaylist(text, baseUrl) {
+  const proxify = (u) => {
+    try {
+      const abs = new URL(u.trim(), baseUrl).toString();
+      return `/api/proxy?url=${encodeURIComponent(abs)}`;
+    } catch {
+      return u;
+    }
+  };
+  return text.split(/\r?\n/).map((line) => {
+    const t = line.trim();
+    if (!t) return line;
+    if (t.startsWith("#")) {
+      // Rewrite URI="..." attributes (EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA, etc.)
+      return t.includes("URI=")
+        ? line.replace(/URI="([^"]*)"/g, (_, u) => `URI="${proxify(u)}"`)
+        : line;
+    }
+    // Bare resource line: a segment or a child playlist URL.
+    return proxify(t);
+  }).join("\n");
+}
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -107,30 +139,62 @@ export async function GET(request) {
     }
 
     // Detect content type from upstream
-    const upstreamContentType = upstream.headers.get("content-type") || "text/plain";
+    const upstreamContentType = upstream.headers.get("content-type") || "";
     const baseType = upstreamContentType.split(";")[0].trim().toLowerCase();
-    const isImage = IMAGE_TYPES.has(baseType);
+    const path = parsed.pathname.toLowerCase();
 
-    // Common response headers — strip CORP/CSP that would block the browser
-    const responseHeaders = {
-      "Content-Type": upstreamContentType,
+    // A textual playlist is worth inspecting if its type OR extension says so.
+    const maybePlaylist =
+      PLAYLIST_TYPES.has(baseType) ||
+      baseType === "text/plain" || baseType === "" ||
+      path.endsWith(".m3u8") || path.endsWith(".m3u");
+
+    // Common response headers — strip CORP/CSP that would block the browser.
+    const cors = {
       "Access-Control-Allow-Origin": "*",
       "Cross-Origin-Resource-Policy": "cross-origin",
       "Cross-Origin-Embedder-Policy": "unsafe-none",
-      // Images cached 1 hour; text (playlists/keys) cached 5 min
-      "Cache-Control": isImage
-        ? "public, max-age=3600, stale-while-revalidate=300"
-        : "public, max-age=300, stale-while-revalidate=60",
     };
 
-    if (isImage) {
-      // Stream binary body directly — do NOT call .text() on binary data
-      const buffer = await upstream.arrayBuffer();
-      return new Response(buffer, { status: 200, headers: responseHeaders });
-    } else {
+    if (maybePlaylist) {
       const text = await upstream.text();
-      return new Response(text, { status: 200, headers: responseHeaders });
+      const baseUrl = upstream.url || cleanUrl; // resolve relatives post-redirect
+      if (HLS_TAG_RE.test(text)) {
+        // Real HLS playlist → rewrite all child URLs through this proxy.
+        const rewritten = rewriteHlsPlaylist(text, baseUrl);
+        return new Response(rewritten, {
+          status: 200,
+          headers: {
+            ...cors,
+            "Content-Type": "application/vnd.apple.mpegurl",
+            "Cache-Control": "no-store", // live manifests must not be cached
+          },
+        });
+      }
+      // Plain text or an IPTV channel-list .m3u — pass through untouched.
+      return new Response(text, {
+        status: 200,
+        headers: {
+          ...cors,
+          "Content-Type": upstreamContentType || "text/plain; charset=utf-8",
+          "Cache-Control": "public, max-age=300, stale-while-revalidate=60",
+        },
+      });
     }
+
+    // Binary (segments, keys, images, mp4, …) — stream straight through; never
+    // buffer/.text() binary data. Passthrough avoids holding segments in memory.
+    const isImage = baseType.startsWith("image/");
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        ...cors,
+        "Content-Type": upstreamContentType || "application/octet-stream",
+        "Cache-Control": isImage
+          ? "public, max-age=3600, stale-while-revalidate=300"
+          : "public, max-age=30",
+      },
+    });
   } catch (err) {
     const isTimeout = err.name === "AbortError";
     return new Response(

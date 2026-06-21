@@ -402,86 +402,76 @@ export default function IPTVPage() {
     setIsPlaying(false); setPlaybackError(null); setIsLoadingStream(true);
     const url = activeChannel.url;
 
+    let started = false;     // true once real playback begins
+    let netRetries = 0;      // cap NETWORK_ERROR recovery attempts
+
+    const failStream = (msg) => {
+      if (started) return;   // already playing — ignore late errors
+      clearTimeout(timeout);
+      setIsLoadingStream(false); setIsPlaying(false);
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      video.pause(); video.src = ""; video.load();
+      setStreamStatus(p => ({ ...p, [url]: "offline" }));
+      setPlaybackError(msg);
+    };
+
+    // Hard ceiling: if playback hasn't actually started in 12s, give up.
+    // Guard on `started`, NOT video.paused — play() flips paused=false while
+    // still buffering, which made the old check never fire.
     const timeout = setTimeout(() => {
-      if (video.paused && !video.ended) {
-        setIsLoadingStream(false); setIsPlaying(false);
-        if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-        video.pause(); video.src = ""; video.load();
-        setStreamStatus(p => ({ ...p, [url]: "offline" }));
-        setPlaybackError("Connection timed out. The stream may be offline, geo-blocked, or blocked by CORS.");
-      }
-    }, 10000);
+      failStream("Connection timed out. The stream may be offline, geo-blocked, or blocked by CORS.");
+    }, 12000);
+
+    // Route the master manifest through our proxy. The proxy rewrites every
+    // child URL (variants, segments, AES keys) to flow back through it too, so
+    // the browser only ever makes same-origin requests — no CORS, no 403.
+    const proxiedUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
 
     if (Hls.isSupported()) {
-      // Custom loader: routes AES-128 key requests and playlists through our
-      // server-side proxy so the browser never hits key servers directly (avoids 403).
-      const DefaultLoader = Hls.DefaultConfig.loader;
-      class ProxyLoader extends DefaultLoader {
-        load(context, cfg, callbacks) {
-          // Proxy key requests (AES-128 encryption keys) and sub-playlists
-          if (
-            context.type === "key" ||
-            (context.type === "level" && context.url && !context.url.startsWith("/"))
-          ) {
-            context = {
-              ...context,
-              url: `/api/proxy?url=${encodeURIComponent(context.url)}`,
-            };
-          }
-          super.load(context, cfg, callbacks);
-        }
-      }
-
       const hls = new Hls({
         maxMaxBufferLength: 20,
         enableWorker: true,
         lowLatencyMode: true,
-        loader: ProxyLoader,
-        // Retry settings: be patient with flaky streams
-        manifestLoadingMaxRetry: 2,
-        levelLoadingMaxRetry: 2,
-        fragLoadingMaxRetry: 2,
+        // Short per-request timeouts so a silently-dropping (geo-blocked) host
+        // surfaces a fatal error fast instead of hanging the loader.
+        manifestLoadingTimeOut: 8000,
+        manifestLoadingMaxRetry: 1,
+        levelLoadingTimeOut: 8000,
+        levelLoadingMaxRetry: 1,
+        fragLoadingTimeOut: 8000,
+        fragLoadingMaxRetry: 1,
       });
       hlsRef.current = hls;
-      hls.loadSource(url); hls.attachMedia(video);
+      hls.loadSource(proxiedUrl); hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
       hls.on(Hls.Events.ERROR, (_, d) => {
         if (!d.fatal) return;
-        clearTimeout(timeout);
         const isKeyError = d.details === Hls.ErrorDetails.KEY_LOAD_ERROR ||
                            d.details === Hls.ErrorDetails.KEY_LOAD_TIMEOUT;
         if (isKeyError) {
-          stopPlayback();
-          setStreamStatus(p => ({ ...p, [url]: "offline" }));
-          setPlaybackError("Stream uses AES-128 encryption and its key server blocked the request. Try another channel or open in VLC.");
+          failStream("Stream uses AES-128 encryption and its key server blocked the request. Try another channel or open in VLC.");
         } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          hls.startLoad();
+          // Recover a couple of times, then give up — don't loop forever.
+          if (netRetries < 2) { netRetries++; hls.startLoad(); }
+          else failStream("Could not connect to stream server. It may be offline or geo-blocked.");
         } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
           hls.recoverMediaError();
         } else {
-          stopPlayback();
-          setStreamStatus(p => ({ ...p, [url]: "offline" }));
-          setPlaybackError("Could not connect to stream server. It may be offline or geo-blocked.");
+          failStream("Could not connect to stream server. It may be offline or geo-blocked.");
         }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
+      video.src = proxiedUrl;
       video.addEventListener("loadedmetadata", () => video.play().catch(() => {}));
-      video.addEventListener("error", () => { clearTimeout(timeout); setPlaybackError("Native HLS failed."); setIsLoadingStream(false); });
+      video.addEventListener("error", () => { failStream("Native HLS failed. The stream may be offline or geo-blocked."); });
     } else {
       clearTimeout(timeout); setPlaybackError("HLS not supported. Use Chrome or Edge."); setIsLoadingStream(false);
     }
 
-    const onPlaying = () => { clearTimeout(timeout); setIsLoadingStream(false); setIsPlaying(true); setStreamStatus(p => ({ ...p, [url]: "online" })); };
+    const onPlaying = () => { started = true; clearTimeout(timeout); setIsLoadingStream(false); setIsPlaying(true); setStreamStatus(p => ({ ...p, [url]: "online" })); };
     video.addEventListener("playing", onPlaying);
     return () => { clearTimeout(timeout); if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } video.removeEventListener("playing", onPlaying); };
   }, [activeChannel]);
-
-  const stopPlayback = () => {
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-    if (videoRef.current) { videoRef.current.pause(); videoRef.current.src = ""; videoRef.current.load(); }
-    setIsPlaying(false);
-  };
 
   /* Keyboard */
   useEffect(() => {
@@ -898,8 +888,8 @@ export default function IPTVPage() {
                   <h3 className="font-['Outfit'] text-xl font-bold">Unable to Play Channel</h3>
                   <p className="text-sm text-slate-400">{playbackError}</p>
                   <div className="w-full p-4 rounded-xl bg-amber-500/[0.06] border border-amber-500/15 text-left">
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1"><HelpCircle className="w-3 h-3" /> CORS Tip</p>
-                    <p className="text-xs text-slate-400 leading-relaxed">Browser security blocks direct streams. Install a <strong className="text-slate-200">CORS Unblock</strong> extension or open in <strong className="text-slate-200">VLC</strong>.</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1"><HelpCircle className="w-3 h-3" /> Why?</p>
+                    <p className="text-xs text-slate-400 leading-relaxed">Streams route through a built-in proxy, so CORS isn't the problem. This channel is likely <strong className="text-slate-200">offline</strong> or <strong className="text-slate-200">geo-blocked</strong> in the server's region. Try another, or open in <strong className="text-slate-200">VLC</strong>.</p>
                   </div>
                   <div className="flex gap-3">
                     <button onClick={() => playChannel(activeChannel)}
