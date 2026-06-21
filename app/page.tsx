@@ -630,13 +630,15 @@ export default function IPTVPage() {
           >
             <Menu className="w-5 h-5" />
           </button>
-          <div className="relative flex items-center gap-2 cursor-pointer">
+          <a href="https://3s-soft.com" target="_blank" rel="noopener noreferrer"
+            className="relative flex items-center gap-2 cursor-pointer" title="Designed & developed by 3S-Soft">
             <div className="logo-glow" />
             <Tv className="w-5 h-5 sm:w-6 sm:h-6 text-violet-500 drop-shadow-[0_2px_8px_rgba(139,92,246,0.5)]" />
-            <span className="font-['Outfit'] text-base sm:text-lg font-extrabold tracking-wider">
+            <span className="font-['Outfit'] text-base sm:text-lg font-extrabold tracking-wider leading-none">
               3S-<span className="text-gradient">IPTV</span>
+              <span className="hidden sm:block text-[8px] font-semibold tracking-normal text-slate-500 mt-0.5">by 3S-Soft</span>
             </span>
-          </div>
+          </a>
           <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-500/8 border border-cyan-500/20 text-[11px] font-bold uppercase tracking-widest text-cyan-400">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 relative pulse-dot" />
             iptv-org
@@ -1027,6 +1029,11 @@ export default function IPTVPage() {
                       <Play className="w-4 h-4" /> Play First Channel
                     </button>
                   )}
+                  <p className="mt-3 text-[11px] text-slate-500">
+                    Designed &amp; developed by{" "}
+                    <a href="https://3s-soft.com" target="_blank" rel="noopener noreferrer"
+                      className="font-bold text-gradient hover:underline">3S-Soft</a>
+                  </p>
                 </div>
               </div>
             }

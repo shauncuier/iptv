@@ -84,6 +84,11 @@ export default function VideoPlayer({ player, activeChannel, onRetry, idle }: Vi
             <h3 className="font-['Outfit'] text-lg font-bold">Connecting to Stream</h3>
             <p className="text-sm font-semibold text-slate-300">{activeChannel.name}</p>
             <p className="text-xs text-slate-500">Initializing HLS playback…</p>
+            <p className="mt-1 text-[11px] text-slate-500">
+              Designed &amp; developed by{" "}
+              <a href="https://3s-soft.com" target="_blank" rel="noopener noreferrer"
+                className="font-bold text-gradient hover:underline">3S-Soft</a>
+            </p>
           </div>
         </div>
       )}

@@ -17,6 +17,10 @@ export const metadata: Metadata = {
   title: "3S-IPTV — Free Live TV Powered by iptv-org",
   description:
     "Stream 8,000+ free live TV channels from iptv-org.github.io. Browse by category, language, or country. Powered by HLS.js and Next.js.",
+  applicationName: "3S-IPTV",
+  authors: [{ name: "3S-Soft", url: "https://3s-soft.com" }],
+  creator: "3S-Soft",
+  publisher: "3S-Soft",
 };
 
 // viewport-fit=cover enables env(safe-area-inset-*) on notched phones; theme
