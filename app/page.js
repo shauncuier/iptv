@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import Hls from "hls.js";
 import parser from "iptv-playlist-parser";
+import IPTV_SOURCES from "@/sources.config.js";
 import {
   Tv, Search, X, Settings, List, Folder, Heart, Film, Newspaper,
   Trophy, Music, Smile, Church, CloudSun, ShoppingCart, GraduationCap,
@@ -127,6 +128,36 @@ async function checkStreamStatus(url) {
     const data = await res.json();
     return data.ok ? "online" : "offline";
   } catch { return "offline"; }
+}
+
+// Pre-flight probe used before attempting playback. Returns the raw upstream
+// HTTP status so the error UI can distinguish "host not responding" (dead)
+// from "403 Forbidden" (geo-block) from "404" (removed). status = 0 means the
+// request itself failed (DNS / TCP / TLS / timeout) — i.e. host unreachable.
+async function probeStream(url) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 9000);
+    const res = await fetch(`/api/proxy?check=1&url=${encodeURIComponent(url)}`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false, status: 0 };
+    const data = await res.json();
+    return { ok: !!data.ok, status: data.status || 0 };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+// Human-readable reason for an offline stream, keyed off the real HTTP status
+// surfaced by the proxy. Used so the error overlay can tell the user *why*
+// rather than a generic "timed out" message.
+function streamFailureReason(status) {
+  if (status === 0)     return "The stream host is not responding — it's likely offline or no longer broadcasting.";
+  if (status === 403 || status === 451) return `Host returned ${status} (Forbidden) — the stream is geo-blocked from this server's region.`;
+  if (status === 404)   return "Host returned 404 — this channel has been removed or the URL is wrong.";
+  if (status === 401)   return "Host returned 401 — this stream requires authentication (token/key the app can't supply).";
+  if (status >= 500)    return `Host returned ${status} (server error) — the broadcaster's server is having problems.`;
+  return `Host responded with HTTP ${status}.`;
 }
 
 // World Cup channel matcher — name / group / tvg-id keywords across languages.
@@ -268,9 +299,12 @@ export default function IPTVPage() {
   const [activePresetUrl, setActivePresetUrl] = useState(DEFAULT_PLAYLIST);
   const [isPlaylistLoading, setIsPlaylistLoading] = useState(false);
   const [isBrowseOpen, setIsBrowseOpen] = useState(false);
+  const [multiLoadProgress, setMultiLoadProgress] = useState(null);
+  const [loadAllSources, setLoadAllSources] = useState(false);
 
   const [toasts, setToasts] = useState([]);
   const [streamStatus, setStreamStatus] = useState({});
+  const streamStatusRef = useRef({});
 
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -287,7 +321,10 @@ export default function IPTVPage() {
       const r = localStorage.getItem("iptv_recents");
       if (r) setRecents(JSON.parse(r));
     } catch {}
-    fetchPlaylist(DEFAULT_PLAYLIST);
+    // If sources are configured, merge them all; otherwise fall back to the
+    // original single-source default playlist.
+    if (IPTV_SOURCES && IPTV_SOURCES.length) fetchMultiplePlaylists(IPTV_SOURCES);
+    else fetchPlaylist(DEFAULT_PLAYLIST);
   }, []);
 
   useEffect(() => {
@@ -312,11 +349,73 @@ export default function IPTVPage() {
       setChannels(parsed);
       setPlaylistUrl(url);
       setSearchQuery(""); setCurrentCategory(null); setPage(1);
-      checkedRef.current.clear(); setStreamStatus({});
+      checkedRef.current.clear();
+      const fresh = {}; streamStatusRef.current = fresh; setStreamStatus(fresh);
       addToast(`Loaded ${parsed.length.toLocaleString()} channels!`, "success");
     } catch (e) {
       addToast(`Failed: ${e.message}`, "error");
     } finally { setIsPlaylistLoading(false); }
+  };
+
+  // Merge many M3U sources at once. Fetches each through the same proxy as
+  // fetchPlaylist, runs them in a small concurrency batch, and dedupes by
+  // stream URL so overlapping sources (e.g. several iptv-org variants) don't
+  // double-list channels. One dead URL is reported and skipped, not fatal.
+  const fetchMultiplePlaylists = async (sources) => {
+    const list = sources.filter(s => s && s.url);
+    if (!list.length) { addToast("No sources configured", "error"); return; }
+    setIsPlaylistLoading(true);
+    setMultiLoadProgress({ done: 0, total: list.length });
+    addToast(`Loading ${list.length} source${list.length > 1 ? "s" : ""}…`, "info");
+
+    const CONCURRENCY = 5;
+    let done = 0;
+    let okCount = 0;
+    const failed = [];
+    const merged = [];
+    const seen = new Set();
+
+    // Fetch + parse a single source, pushing deduped channels into `merged`.
+    const loadOne = async (src) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 30000);
+        const res = await fetch(`/api/proxy?url=${encodeURIComponent(src.url)}`, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const parsed = parseM3U(await res.text());
+        for (const ch of parsed) {
+          if (!ch.url || seen.has(ch.url)) continue;
+          seen.add(ch.url);
+          merged.push(ch);
+        }
+        okCount++;
+      } catch (e) {
+        failed.push(src.name || src.url);
+      } finally {
+        done++;
+        setMultiLoadProgress({ done, total: list.length });
+      }
+    };
+
+    // Run in batches of CONCURRENCY to avoid hammering the proxy.
+    for (let i = 0; i < list.length; i += CONCURRENCY) {
+      await Promise.all(list.slice(i, i + CONCURRENCY).map(loadOne));
+    }
+
+    setMultiLoadProgress(null);
+    if (!merged.length) {
+      addToast("No channels loaded from any source.", "error");
+    } else {
+      setChannels(merged);
+      setPlaylistUrl(`All Sources (${list.length})`);
+      setSearchQuery(""); setCurrentCategory(null); setPage(1);
+      checkedRef.current.clear();
+      const fresh = {}; streamStatusRef.current = fresh; setStreamStatus(fresh);
+      const base = `Loaded ${merged.length.toLocaleString()} channels from ${okCount}/${list.length} sources`;
+      addToast(failed.length ? `${base}. Failed: ${failed.join(", ")}` : `${base}!`, failed.length ? "info" : "success");
+    }
+    setIsPlaylistLoading(false);
   };
 
   const handleFileUpload = (file) => {
@@ -328,7 +427,8 @@ export default function IPTVPage() {
         if (!parsed.length) throw new Error("No channels found.");
         setChannels(parsed); setPlaylistUrl(`File: ${file.name}`);
         setSearchQuery(""); setCurrentCategory(null); setPage(1);
-        checkedRef.current.clear(); setStreamStatus({});
+        checkedRef.current.clear();
+        const fresh = {}; streamStatusRef.current = fresh; setStreamStatus(fresh);
         addToast(`Loaded ${parsed.length} channels!`, "success");
       } catch (err) { addToast(`Parse error: ${err.message}`, "error"); }
       finally { setIsPlaylistLoading(false); }
@@ -336,6 +436,12 @@ export default function IPTVPage() {
     reader.onerror = () => { addToast("File read failed", "error"); setIsPlaylistLoading(false); };
     reader.readAsText(file);
   };
+
+  // Keep a ref in sync so the filtered memo can read latest status values
+  // without depending on the streamStatus state object — this breaks the
+  // feedback loop: streamStatus → filtered → paginated → stream-check effect
+  // → setStreamStatus → (repeat forever).
+  useEffect(() => { streamStatusRef.current = streamStatus; }, [streamStatus]);
 
   const filtered = useMemo(() => {
     let r = [...channels];
@@ -354,10 +460,12 @@ export default function IPTVPage() {
       });
     }
     if (showOnlyActive) {
-      r = r.filter(c => (streamStatus[c.url] !== "offline" && !c.isGeoBlocked) || (activeChannel && activeChannel.url === c.url));
+      // Read from ref — intentionally NOT in dep array to avoid the cycle.
+      const status = streamStatusRef.current;
+      r = r.filter(c => (status[c.url] !== "offline" && !c.isGeoBlocked) || (activeChannel && activeChannel.url === c.url));
     }
     return r;
-  }, [channels, currentCategory, searchQuery, showWorldCup, showOnlyActive, streamStatus, activeChannel]);
+  }, [channels, currentCategory, searchQuery, showWorldCup, showOnlyActive, activeChannel]);
 
   const categories = useMemo(() => {
     const counts = {};
@@ -371,15 +479,25 @@ export default function IPTVPage() {
 
   const paginated = useMemo(() => filtered.slice(0, page * PAGE_SIZE), [filtered, page]);
 
-  /* Stream status checks */
+  /* Stream status — lazy background check for visible channels only.
+     Uses checkedRef to prevent re-checking, and updates via ref to avoid
+     the streamStatus→filtered→paginated→effect infinite loop. */
   useEffect(() => {
     paginated.forEach(ch => {
       if (checkedRef.current.has(ch.url)) return;
       checkedRef.current.add(ch.url);
-      setStreamStatus(p => ({ ...p, [ch.url]: "checking" }));
-      checkStreamStatus(ch.url).then(s => setStreamStatus(p => ({ ...p, [ch.url]: s })));
+      // Mark as checking immediately via ref (no re-render cascade)
+      streamStatusRef.current = { ...streamStatusRef.current, [ch.url]: "checking" };
+      checkStreamStatus(ch.url).then(s => {
+        setStreamStatus(prev => {
+          const next = { ...prev, [ch.url]: s };
+          streamStatusRef.current = next;
+          return next;
+        });
+      });
     });
   }, [paginated]);
+
 
   /* Infinite scroll */
   useEffect(() => {
@@ -402,75 +520,98 @@ export default function IPTVPage() {
     setIsPlaying(false); setPlaybackError(null); setIsLoadingStream(true);
     const url = activeChannel.url;
 
+    // Guard against a stale async chain — if the user picks a different channel
+    // while the pre-flight probe or load is in flight, abandon this one.
+    let cancelled = false;
     let started = false;     // true once real playback begins
     let netRetries = 0;      // cap NETWORK_ERROR recovery attempts
+    let timeout;             // the hard ceiling (set after pre-flight passes)
+
+    const cleanup = () => {
+      cancelled = true;
+      clearTimeout(timeout);
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    };
 
     const failStream = (msg) => {
-      if (started) return;   // already playing — ignore late errors
-      clearTimeout(timeout);
-      setIsLoadingStream(false); setIsPlaying(false);
-      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      if (started || cancelled) return;   // already playing or superseded
+      cleanup();
       video.pause(); video.src = ""; video.load();
       setStreamStatus(p => ({ ...p, [url]: "offline" }));
       setPlaybackError(msg);
+      setIsLoadingStream(false); setIsPlaying(false);
     };
 
-    // Hard ceiling: if playback hasn't actually started in 12s, give up.
-    // Guard on `started`, NOT video.paused — play() flips paused=false while
-    // still buffering, which made the old check never fire.
-    const timeout = setTimeout(() => {
-      failStream("Connection timed out. The stream may be offline, geo-blocked, or blocked by CORS.");
-    }, 12000);
+    const onPlaying = () => {
+      started = true; clearTimeout(timeout);
+      setIsLoadingStream(false); setIsPlaying(true);
+      setStreamStatus(p => ({ ...p, [url]: "online" }));
+    };
 
-    // Route the master manifest through our proxy. The proxy rewrites every
-    // child URL (variants, segments, AES keys) to flow back through it too, so
-    // the browser only ever makes same-origin requests — no CORS, no 403.
+    // Hard ceiling: if playback hasn't actually started in 20s after the
+    // manifest began loading, give up. Guard on `started`, NOT video.paused —
+    // play() flips paused=false while still buffering, which made the old
+    // check never fire. (Raised from 12s to 20s to allow slow CDNs room.)
+    const startHardTimeout = () => {
+      timeout = setTimeout(() => {
+        failStream("Timed out waiting for the first video frame (20s). The manifest loaded but media segments could not be buffered — the CDN serving this stream may be geo-blocked or overloaded from this server's region.");
+      }, 20000);
+    };
+
     const proxiedUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        maxMaxBufferLength: 20,
-        enableWorker: true,
-        lowLatencyMode: true,
-        // Short per-request timeouts so a silently-dropping (geo-blocked) host
-        // surfaces a fatal error fast instead of hanging the loader.
-        manifestLoadingTimeOut: 8000,
-        manifestLoadingMaxRetry: 1,
-        levelLoadingTimeOut: 8000,
-        levelLoadingMaxRetry: 1,
-        fragLoadingTimeOut: 8000,
-        fragLoadingMaxRetry: 1,
-      });
-      hlsRef.current = hls;
-      hls.loadSource(proxiedUrl); hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-      hls.on(Hls.Events.ERROR, (_, d) => {
-        if (!d.fatal) return;
-        const isKeyError = d.details === Hls.ErrorDetails.KEY_LOAD_ERROR ||
-                           d.details === Hls.ErrorDetails.KEY_LOAD_TIMEOUT;
-        if (isKeyError) {
-          failStream("Stream uses AES-128 encryption and its key server blocked the request. Try another channel or open in VLC.");
-        } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          // Recover a couple of times, then give up — don't loop forever.
-          if (netRetries < 2) { netRetries++; hls.startLoad(); }
-          else failStream("Could not connect to stream server. It may be offline or geo-blocked.");
-        } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          hls.recoverMediaError();
-        } else {
-          failStream("Could not connect to stream server. It may be offline or geo-blocked.");
-        }
-      });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = proxiedUrl;
-      video.addEventListener("loadedmetadata", () => video.play().catch(() => {}));
-      video.addEventListener("error", () => { failStream("Native HLS failed. The stream may be offline or geo-blocked."); });
-    } else {
-      clearTimeout(timeout); setPlaybackError("HLS not supported. Use Chrome or Edge."); setIsLoadingStream(false);
-    }
+    const beginPlayback = () => {
+      if (cancelled) return;
+      startHardTimeout();
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          maxMaxBufferLength: 20,
+          enableWorker: true,
+          lowLatencyMode: true,
+          // Short per-request timeouts so a silently-dropping (geo-blocked) host
+          // surfaces a fatal error fast instead of hanging the loader.
+          manifestLoadingTimeOut: 8000,
+          manifestLoadingMaxRetry: 1,
+          levelLoadingTimeOut: 8000,
+          levelLoadingMaxRetry: 1,
+          fragLoadingTimeOut: 8000,
+          fragLoadingMaxRetry: 1,
+        });
+        hlsRef.current = hls;
+        hls.loadSource(proxiedUrl); hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { if (!cancelled) video.play().catch(() => {}); });
+        hls.on(Hls.Events.ERROR, (_, d) => {
+          if (!d.fatal || cancelled) return;
+          const isKeyError = d.details === Hls.ErrorDetails.KEY_LOAD_ERROR ||
+                             d.details === Hls.ErrorDetails.KEY_LOAD_TIMEOUT;
+          if (isKeyError) {
+            failStream("Stream uses AES-128 encryption and its key server blocked the request. Try another channel or open in VLC.");
+          } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            // Recover a couple of times, then give up — don't loop forever.
+            if (netRetries < 2) { netRetries++; hls.startLoad(); }
+            else failStream("Could not connect to stream server. It may be offline or geo-blocked.");
+          } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          } else {
+            failStream("Could not connect to stream server. It may be offline or geo-blocked.");
+          }
+        });
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = proxiedUrl;
+        video.addEventListener("loadedmetadata", () => { if (!cancelled) video.play().catch(() => {}); });
+        video.addEventListener("error", () => { failStream("Native HLS failed. The stream may be offline or geo-blocked."); });
+      } else {
+        clearTimeout(timeout); setPlaybackError("HLS not supported. Use Chrome or Edge."); setIsLoadingStream(false);
+      }
+      video.addEventListener("playing", onPlaying);
+    };
 
-    const onPlaying = () => { started = true; clearTimeout(timeout); setIsLoadingStream(false); setIsPlaying(true); setStreamStatus(p => ({ ...p, [url]: "online" })); };
-    video.addEventListener("playing", onPlaying);
-    return () => { clearTimeout(timeout); if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } video.removeEventListener("playing", onPlaying); };
+    // Channels in the list are pre-verified at playlist load time by
+    // verifyChannels(), so no redundant pre-flight probe needed here.
+    // Go straight to playback — HLS.js error handlers catch dead segments fast.
+    beginPlayback();
+
+    return () => { cleanup(); video.removeEventListener("playing", onPlaying); };
   }, [activeChannel]);
 
   /* Keyboard */
@@ -639,7 +780,9 @@ export default function IPTVPage() {
               <span className="w-2 h-2 rounded-full bg-emerald-400 block" />
               <span className="absolute inset-0 rounded-full bg-emerald-400 pulse-dot" />
             </span>
-            {isPlaylistLoading ? "Loading…" : `${channels.length.toLocaleString()} Channels`}
+            {isPlaylistLoading
+              ? (multiLoadProgress ? `Loading ${multiLoadProgress.done}/${multiLoadProgress.total}…` : "Loading…")
+              : `${channels.length.toLocaleString()} Channels`}
           </div>
           <button onClick={() => setIsBrowseOpen(true)}
             className="flex items-center gap-2 h-10 px-4 rounded-xl border border-white/[0.07] bg-transparent text-slate-400 text-sm font-semibold
@@ -881,29 +1024,50 @@ export default function IPTVPage() {
             )}
 
             {/* Overlay: error */}
-            {activeChannel && playbackError && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#090e18] p-6">
-                <div className="flex flex-col items-center gap-4 text-center max-w-md animate-[zoomIn_0.3s_ease]">
-                  <AlertTriangle className="w-14 h-14 text-red-400 drop-shadow-[0_0_10px_rgba(239,68,68,0.3)]" />
-                  <h3 className="font-['Outfit'] text-xl font-bold">Unable to Play Channel</h3>
-                  <p className="text-sm text-slate-400">{playbackError}</p>
-                  <div className="w-full p-4 rounded-xl bg-amber-500/[0.06] border border-amber-500/15 text-left">
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1"><HelpCircle className="w-3 h-3" /> Why?</p>
-                    <p className="text-xs text-slate-400 leading-relaxed">Streams route through a built-in proxy, so CORS isn't the problem. This channel is likely <strong className="text-slate-200">offline</strong> or <strong className="text-slate-200">geo-blocked</strong> in the server's region. Try another, or open in <strong className="text-slate-200">VLC</strong>.</p>
-                  </div>
-                  <div className="flex gap-3">
-                    <button onClick={() => playChannel(activeChannel)}
-                      className="flex items-center gap-2 h-10 px-5 rounded-xl bg-accent-gradient text-white text-sm font-bold hover:-translate-y-px transition-all">
-                      <RefreshCw className="w-4 h-4" /> Retry
-                    </button>
-                    <a href={activeChannel.url.replace(/^https?:\/\//, "vlc://")}
-                      className="flex items-center gap-2 h-10 px-5 rounded-xl bg-cyan-500/[0.08] border border-cyan-500/20 text-cyan-400 text-sm font-bold hover:bg-cyan-500/15 transition-all">
-                      <PlayCircle className="w-4 h-4" /> Open in VLC
-                    </a>
+            {activeChannel && playbackError && (() => {
+              const err = playbackError.toLowerCase();
+              const isTimeout  = err.includes("timed out") || err.includes("segments");
+              const isGeoBlock = err.includes("403") || err.includes("451") || err.includes("forbidden") || err.includes("geo-blocked");
+              const isGone     = err.includes("404");
+              const isAuth     = err.includes("401") || err.includes("authentication") || err.includes("key server");
+              const isServer   = err.includes("500") || err.includes("502") || err.includes("503") || err.includes("server error");
+
+              const why = isTimeout
+                ? "The manifest URL responded OK, but media segments are served by a different CDN that this server cannot reach. Verification only probes the manifest — segment delivery is a separate hop that can still be geo-throttled or blocked."
+                : isGeoBlock
+                ? "The broadcaster is explicitly blocking requests from this server's IP or country (HTTP 403/451). This is a server-side geo-restriction, not a browser CORS issue. Opening in VLC will play it directly from your IP instead."
+                : isGone
+                ? "The stream URL returned HTTP 404 — the broadcaster has removed or relocated this channel. It may have been taken down permanently."
+                : isAuth
+                ? "This stream requires a session token, API key, or DRM licence that this app cannot supply. It is likely a premium subscription channel."
+                : isServer
+                ? "The broadcaster's streaming server returned a 5xx error — it may be temporarily down or overloaded. Wait a few minutes and retry."
+                : "The stream host is not responding. It may be offline, have moved, or be blocking requests from this server's region.";
+
+              return (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#090e18] p-6">
+                  <div className="flex flex-col items-center gap-4 text-center max-w-md animate-[zoomIn_0.3s_ease]">
+                    <AlertTriangle className="w-14 h-14 text-red-400 drop-shadow-[0_0_10px_rgba(239,68,68,0.3)]" />
+                    <h3 className="font-['Outfit'] text-xl font-bold">Unable to Play Channel</h3>
+                    <p className="text-sm text-slate-400">{playbackError}</p>
+                    <div className="w-full p-4 rounded-xl bg-amber-500/[0.06] border border-amber-500/15 text-left">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1"><HelpCircle className="w-3 h-3" /> Why?</p>
+                      <p className="text-xs text-slate-400 leading-relaxed">{why}</p>
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={() => playChannel(activeChannel)}
+                        className="flex items-center gap-2 h-10 px-5 rounded-xl bg-accent-gradient text-white text-sm font-bold hover:-translate-y-px transition-all">
+                        <RefreshCw className="w-4 h-4" /> Retry
+                      </button>
+                      <a href={activeChannel.url.replace(/^https?:\/\//, "vlc://")}
+                        className="flex items-center gap-2 h-10 px-5 rounded-xl bg-cyan-500/[0.08] border border-cyan-500/20 text-cyan-400 text-sm font-bold hover:bg-cyan-500/15 transition-all">
+                        <PlayCircle className="w-4 h-4" /> Open in VLC
+                      </a>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Player Controls */}
             {activeChannel && !playbackError && (
@@ -1084,18 +1248,30 @@ export default function IPTVPage() {
               {modalTab === "category" && (
                 <div className="flex flex-col gap-3">
                   <p className="text-xs text-slate-500">Browse channels from <strong className="text-slate-300">iptv-org</strong> grouped by category.</p>
+                  {/* All configured sources — merge everything from sources.config.mjs */}
+                  {IPTV_SOURCES && IPTV_SOURCES.length > 0 && (
+                    <button onClick={() => setLoadAllSources(v => !v)}
+                      className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all text-left w-full
+                        ${loadAllSources ? "bg-gradient-to-r from-violet-500/20 to-cyan-500/15 border-violet-500/50" : "bg-gradient-to-r from-violet-500/8 to-cyan-500/5 border-violet-500/25 hover:border-violet-500/40"}`}>
+                      <Zap className="w-5 h-5 text-violet-400 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold text-slate-100">⚡ All Configured Sources ({IPTV_SOURCES.length})</p>
+                        <p className="text-xs text-slate-500 mt-0.5">Merge every source from <code className="bg-white/5 px-1 rounded">sources.config.mjs</code> into one list</p>
+                      </div>
+                    </button>
+                  )}
                   {/* All categories card */}
-                  <button onClick={() => setActivePresetUrl(DEFAULT_PLAYLIST)}
+                  <button onClick={() => { setActivePresetUrl(DEFAULT_PLAYLIST); setLoadAllSources(false); }}
                     className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all text-left w-full
-                      ${activePresetUrl === DEFAULT_PLAYLIST ? "bg-violet-500/15 border-violet-500/50" : "bg-white/[0.03] border-white/[0.07] hover:bg-violet-500/8 hover:border-violet-500/25"}`}>
+                      ${!loadAllSources && activePresetUrl === DEFAULT_PLAYLIST ? "bg-violet-500/15 border-violet-500/50" : "bg-white/[0.03] border-white/[0.07] hover:bg-violet-500/8 hover:border-violet-500/25"}`}>
                     <Zap className="w-5 h-5 text-violet-400 flex-shrink-0" />
                     <div><p className="text-sm font-semibold text-slate-200">All Categories (index.category.m3u)</p><p className="text-xs text-slate-500 mt-0.5">Complete iptv-org playlist — 8,000+ channels</p></div>
                   </button>
                   <div className="grid grid-cols-2 gap-2">
                     {IPTV_ORG_CATEGORIES.map(cat => (
-                      <button key={cat.url} onClick={() => setActivePresetUrl(cat.url)}
+                      <button key={cat.url} onClick={() => { setActivePresetUrl(cat.url); setLoadAllSources(false); }}
                         className={`flex items-center gap-2.5 p-3 rounded-xl border transition-all text-left
-                          ${activePresetUrl === cat.url ? "bg-violet-500/15 border-violet-500/50" : "bg-white/[0.03] border-white/[0.07] hover:bg-violet-500/8 hover:border-violet-500/25 hover:-translate-y-px"}`}>
+                          ${!loadAllSources && activePresetUrl === cat.url ? "bg-violet-500/15 border-violet-500/50" : "bg-white/[0.03] border-white/[0.07] hover:bg-violet-500/8 hover:border-violet-500/25 hover:-translate-y-px"}`}>
                         <CategoryIcon name={cat.name} className="w-4 h-4 text-violet-400 flex-shrink-0" />
                         <div><p className="text-xs font-semibold text-slate-200">{cat.name}</p><p className="text-[11px] text-slate-500">{cat.count.toLocaleString()} ch</p></div>
                       </button>
@@ -1202,6 +1378,8 @@ export default function IPTVPage() {
                   if (modalTab === "file") {
                     if (!selectedFile) return addToast("Select an M3U file first", "error");
                     setIsModalOpen(false); handleFileUpload(selectedFile);
+                  } else if (modalTab === "category" && loadAllSources && IPTV_SOURCES.length) {
+                    setIsModalOpen(false); fetchMultiplePlaylists(IPTV_SOURCES);
                   } else {
                     if (!activePresetUrl) return addToast("Select or enter a playlist URL", "error");
                     setIsModalOpen(false); fetchPlaylist(activePresetUrl);
