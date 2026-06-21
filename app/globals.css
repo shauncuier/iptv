@@ -236,7 +236,8 @@
   }
 
   .player-container:hover .player-controls,
-  .player-container:focus-within .player-controls {
+  .player-container:focus-within .player-controls,
+  .player-container.controls-visible .player-controls {
     transform: translateY(0);
     opacity: 1;
   }

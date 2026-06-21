@@ -283,7 +283,9 @@ export async function GET(request) {
         "Content-Type": upstreamContentType || "application/octet-stream",
         "Cache-Control": isImage
           ? "public, max-age=3600, stale-while-revalidate=300"
-          : "public, max-age=30",
+          : path.endsWith(".ts")
+            ? "no-store" // live MPEG-TS — never cache, stale bytes break playback
+            : "public, max-age=30",
       },
     });
   } catch (err) {

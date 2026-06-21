@@ -1,4 +1,6 @@
+import type { Metadata } from "next";
 import { Inter, Outfit } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const inter = Inter({
@@ -11,16 +13,18 @@ const outfit = Outfit({
   subsets: ["latin"],
 });
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "3S-IPTV — Free Live TV Powered by iptv-org",
-  description: "Stream 8,000+ free live TV channels from iptv-org.github.io. Browse by category, language, or country. Powered by HLS.js and Next.js.",
+  description:
+    "Stream 8,000+ free live TV channels from iptv-org.github.io. Browse by category, language, or country. Powered by HLS.js and Next.js.",
 };
 
-export default function RootLayout({ children }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${outfit.variable}`} style={{ height: "100%", overflow: "hidden" }}>
       <body style={{ height: "100%", overflow: "hidden" }}>
         {children}
+        <Analytics />
       </body>
     </html>
   );
