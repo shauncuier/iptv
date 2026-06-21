@@ -405,9 +405,18 @@ export function usePlayer({ activeChannel, addToast, setStreamStatus }: UsePlaye
   };
 
   const toggleFullscreen = () => {
-    const c = playerContainerRef.current; if (!c) return;
-    if (!document.fullscreenElement) c.requestFullscreen().catch(() => addToast("Fullscreen denied", "error"));
-    else document.exitFullscreen();
+    const c = playerContainerRef.current;
+    const v = videoRef.current;
+    if (document.fullscreenElement) { document.exitFullscreen(); return; }
+    // Standard fullscreen (desktop, Android, iPad). iPhone Safari has no element
+    // fullscreen — fall back to putting the <video> itself in native fullscreen.
+    if (c?.requestFullscreen) {
+      c.requestFullscreen().catch(() => addToast("Fullscreen denied", "error"));
+    } else if (v?.webkitEnterFullscreen) {
+      v.webkitEnterFullscreen();
+    } else {
+      addToast("Fullscreen not supported on this device", "error");
+    }
   };
 
   const togglePip = async () => {

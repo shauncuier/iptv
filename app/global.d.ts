@@ -25,6 +25,8 @@ declare global {
   }
   interface HTMLVideoElement {
     webkitShowPlaybackTargetPicker?: () => void;
+    webkitEnterFullscreen?: () => void;
+    webkitSupportsFullscreen?: boolean;
   }
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
   Play, Pause, Volume1, Volume2, VolumeX, Sun, Loader2, AlertTriangle,
   HelpCircle, RefreshCw, PlayCircle, Zap, Settings, Activity, Cast, Airplay,
@@ -33,6 +33,9 @@ export default function VideoPlayer({ player, activeChannel, onRetry, idle }: Vi
     revealControls, togglePlay, toggleMute, handleVolume, toggleFullscreen,
     togglePip, showAirPlay, toggleCast, onTouchStart, onTouchMove, onTouchEnd,
   } = player;
+
+  // Tap-toggled quality menu (hover doesn't exist on touch devices).
+  const [qualityOpen, setQualityOpen] = useState(false);
 
   return (
     <div
@@ -181,7 +184,7 @@ export default function VideoPlayer({ player, activeChannel, onRetry, idle }: Vi
                 </button>
                 <input type="range" className="volume-slider" min="0" max="1" step="0.05" value={isMuted ? 0 : volume} onChange={handleVolume} />
               </div>
-              <span className="ml-2 text-sm font-semibold text-white truncate max-w-[240px]">{activeChannel.name}</span>
+              <span className="ml-2 text-sm font-semibold text-white truncate max-w-[90px] sm:max-w-[240px]">{activeChannel.name}</span>
             </div>
             <div className="flex items-center gap-1 sm:gap-2">
               {/* Data Saver toggle */}
@@ -193,47 +196,52 @@ export default function VideoPlayer({ player, activeChannel, onRetry, idle }: Vi
                 <Zap className="w-4.5 h-4.5" />
               </button>
 
-              {/* Aspect Ratio selector */}
+              {/* Aspect Ratio selector — hidden on phones to keep the bar from overflowing */}
               <button
                 onClick={toggleAspectRatio}
                 title={`Aspect Ratio: ${aspectRatio === "contain" ? "Fit" : aspectRatio === "cover" ? "Zoom" : "Stretch"}`}
-                className="h-9 px-2 text-[10px] font-extrabold tracking-wider uppercase rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all"
+                className="hidden sm:block h-9 px-2 text-[10px] font-extrabold tracking-wider uppercase rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all"
               >
                 {aspectRatio === "contain" ? "Fit" : aspectRatio === "cover" ? "Zoom" : "Stretch"}
               </button>
 
-              {/* HLS quality selector */}
+              {/* HLS quality selector — tap to open (works on touch + desktop) */}
               {hlsLevels.length > 0 && (
-                <div className="relative group">
-                  <button className="h-9 px-2 flex items-center gap-1 text-[10px] font-extrabold tracking-wider rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all">
+                <div className="relative">
+                  <button
+                    onClick={() => setQualityOpen((o) => !o)}
+                    className="h-9 px-2 flex items-center gap-1 text-[10px] font-extrabold tracking-wider rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all"
+                  >
                     <Settings className="w-3.5 h-3.5 animate-[spin_8s_linear_infinite]" />
                     {currentLevel === -1 ? "Auto" : `${hlsLevels[currentLevel]?.height || "N/A"}p`}
                   </button>
-                  <div className="absolute bottom-full right-0 mb-1.5 hidden group-hover:block bg-slate-950/95 border border-white/10 rounded-xl p-1 min-w-[85px] z-50 text-[10px] shadow-[0_8px_32px_rgba(0,0,0,0.8)] backdrop-blur-md">
-                    <button
-                      onClick={() => handleQualityChange(-1)}
-                      className={`w-full text-left px-2 py-1.5 rounded-lg transition-all font-semibold ${currentLevel === -1 ? "text-violet-400 bg-violet-500/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"}`}
-                    >
-                      Auto
-                    </button>
-                    {hlsLevels.map((lvl, index) => (
+                  {qualityOpen && (
+                    <div className="absolute bottom-full right-0 mb-1.5 block bg-slate-950/95 border border-white/10 rounded-xl p-1 min-w-[85px] z-50 text-[10px] shadow-[0_8px_32px_rgba(0,0,0,0.8)] backdrop-blur-md">
                       <button
-                        key={index}
-                        onClick={() => handleQualityChange(index)}
-                        className={`w-full text-left px-2 py-1.5 rounded-lg transition-all font-semibold ${currentLevel === index ? "text-violet-400 bg-violet-500/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"}`}
+                        onClick={() => { handleQualityChange(-1); setQualityOpen(false); }}
+                        className={`w-full text-left px-2 py-1.5 rounded-lg transition-all font-semibold ${currentLevel === -1 ? "text-violet-400 bg-violet-500/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"}`}
                       >
-                        {lvl.height ? `${lvl.height}p` : `${(lvl.bitrate / 1000).toFixed(0)}k`}
+                        Auto
                       </button>
-                    ))}
-                  </div>
+                      {hlsLevels.map((lvl, index) => (
+                        <button
+                          key={index}
+                          onClick={() => { handleQualityChange(index); setQualityOpen(false); }}
+                          className={`w-full text-left px-2 py-1.5 rounded-lg transition-all font-semibold ${currentLevel === index ? "text-violet-400 bg-violet-500/10" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"}`}
+                        >
+                          {lvl.height ? `${lvl.height}p` : `${(lvl.bitrate / 1000).toFixed(0)}k`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Stats for nerds toggle */}
+              {/* Stats for nerds toggle — desktop only */}
               <button
                 onClick={() => setShowStats(!showStats)}
                 title="Stats for Nerds"
-                className={`w-9 h-9 flex items-center justify-center rounded-lg hover:bg-white/15 transition-all ${showStats ? "text-violet-400 bg-violet-500/10" : "text-white"}`}
+                className={`hidden sm:flex w-9 h-9 items-center justify-center rounded-lg hover:bg-white/15 transition-all ${showStats ? "text-violet-400 bg-violet-500/10" : "text-white"}`}
               >
                 <Activity className="w-4.5 h-4.5" />
               </button>
@@ -248,7 +256,7 @@ export default function VideoPlayer({ player, activeChannel, onRetry, idle }: Vi
                   <Airplay className="w-5 h-5" />
                 </button>
               )}
-              <button onClick={togglePip} className="w-9 h-9 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all" title="Picture in Picture">
+              <button onClick={togglePip} className="hidden sm:flex w-9 h-9 items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all" title="Picture in Picture">
                 <PictureInPicture2 className="w-5 h-5" />
               </button>
               <button onClick={toggleFullscreen} className="w-9 h-9 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-all" title="Fullscreen">
