@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Outfit } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
+import ServiceWorkerRegister from "./components/ServiceWorkerRegister";
 import "./globals.css";
 
 const inter = Inter({
@@ -70,6 +71,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${inter.variable} ${outfit.variable}`} style={{ height: "100%", overflow: "hidden" }}>
       <body style={{ height: "100%", overflow: "hidden" }}>
         {children}
+        <ServiceWorkerRegister />
         <Analytics />
       </body>
     </html>
