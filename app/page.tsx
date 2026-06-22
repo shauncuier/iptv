@@ -85,11 +85,87 @@ export default function IPTVPage() {
     await setCachedPlaylist("cacheTimestamp", Date.now());
   };
 
+  async function fetchLocalPlaylists() {
+    try {
+      const res = await fetch("/api/playlists");
+      if (res.ok) {
+        const data = await res.json();
+        setLocalPlaylists(data.playlists || []);
+      }
+    } catch (err) {
+      console.error("Failed to load local playlists:", err);
+    }
+  }
+
+  // Merge many M3U sources at once. Fetches each through the same proxy as
+  // fetchPlaylist, runs them in a small concurrency batch, and dedupes by
+  // stream URL so overlapping sources (e.g. several iptv-org variants) don't
+  // double-list channels. One dead URL is reported and skipped, not fatal.
+  async function fetchMultiplePlaylists(sources) {
+    const list = sources.filter(s => s && s.url);
+    if (!list.length) { addToast("No sources configured", "error"); return; }
+    setIsPlaylistLoading(true);
+    setMultiLoadProgress({ done: 0, total: list.length });
+    addToast(`Loading ${list.length} source${list.length > 1 ? "s" : ""}…`, "info");
+
+    const CONCURRENCY = 5;
+    let done = 0;
+    let okCount = 0;
+    const failed = [];
+    const merged = [];
+    const seen = new Set();
+
+    // Fetch + parse a single source, pushing deduped channels into `merged`.
+    const loadOne = async (src) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 30000);
+        const res = await fetch(`/api/proxy?url=${encodeURIComponent(src.url)}`, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const parsed = parseM3U(await res.text());
+        for (const ch of parsed) {
+          if (!ch.url || seen.has(ch.url)) continue;
+          seen.add(ch.url);
+          merged.push(ch);
+        }
+        okCount++;
+      } catch (e) {
+        failed.push(src.name || src.url);
+      } finally {
+        done++;
+        setMultiLoadProgress({ done, total: list.length });
+      }
+    };
+
+    // Run in batches of CONCURRENCY to avoid hammering the proxy.
+    for (let i = 0; i < list.length; i += CONCURRENCY) {
+      await Promise.all(list.slice(i, i + CONCURRENCY).map(loadOne));
+    }
+
+    setMultiLoadProgress(null);
+    if (!merged.length) {
+      addToast("No channels loaded from any source.", "error");
+    } else {
+      setChannels(merged);
+      const urlText = `All Sources (${list.length})`;
+      setPlaylistUrl(urlText);
+      saveToCache(merged, urlText);
+      setSearchQuery(""); setCurrentCategory(null); setPage(1);
+      checkedRef.current.clear();
+      const fresh = {}; streamStatusRef.current = fresh; setStreamStatus(fresh);
+      const base = `Loaded ${merged.length.toLocaleString()} channels from ${okCount}/${list.length} sources`;
+      addToast(failed.length ? `${base}. Failed: ${failed.join(", ")}` : `${base}!`, failed.length ? "info" : "success");
+    }
+    setIsPlaylistLoading(false);
+  }
+
   const handleSyncSources = () => {
     if (IPTV_SOURCES && IPTV_SOURCES.length) {
       fetchMultiplePlaylists(IPTV_SOURCES);
     } else {
-      fetchPlaylist(DEFAULT_PLAYLIST);
+      setChannels([]);
+      addToast("No configured sources to sync.", "info");
     }
   };
 
@@ -205,21 +281,30 @@ export default function IPTVPage() {
   // Cancel any active scan on category or playlist change
   useEffect(() => {
     if (scanState.isScanning) {
-      cancelLivenessScan();
+      setTimeout(() => {
+        cancelLivenessScan();
+      }, 0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels, currentCategory]);
 
   /* Init */
   useEffect(() => {
-    try {
-      const f = localStorage.getItem("iptv_favorites");
-      if (f) setFavorites(JSON.parse(f));
-      const r = localStorage.getItem("iptv_recents");
-      if (r) setRecents(JSON.parse(r));
-    } catch {}
-
     // Load from cache first for instant startup!
     (async () => {
+      try {
+        const f = localStorage.getItem("iptv_favorites");
+        if (f) setFavorites(JSON.parse(f));
+        const r = localStorage.getItem("iptv_recents");
+        if (r) setRecents(JSON.parse(r));
+      } catch {}
+
+      if (!IPTV_SOURCES || IPTV_SOURCES.length === 0) {
+        setChannels([]);
+        fetchLocalPlaylists();
+        return;
+      }
+
       const cached = await getCachedPlaylist<Channel[]>("channels");
       const cachedUrl = await getCachedPlaylist<string>("playlistUrl");
       if (cached && cached.length) {
@@ -230,10 +315,10 @@ export default function IPTVPage() {
         fetchLocalPlaylists();
       } else {
         fetchLocalPlaylists();
-        if (IPTV_SOURCES && IPTV_SOURCES.length) fetchMultiplePlaylists(IPTV_SOURCES);
-        else fetchPlaylist(DEFAULT_PLAYLIST);
+        fetchMultiplePlaylists(IPTV_SOURCES);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -267,68 +352,7 @@ export default function IPTVPage() {
     } finally { setIsPlaylistLoading(false); }
   };
 
-  // Merge many M3U sources at once. Fetches each through the same proxy as
-  // fetchPlaylist, runs them in a small concurrency batch, and dedupes by
-  // stream URL so overlapping sources (e.g. several iptv-org variants) don't
-  // double-list channels. One dead URL is reported and skipped, not fatal.
-  const fetchMultiplePlaylists = async (sources) => {
-    const list = sources.filter(s => s && s.url);
-    if (!list.length) { addToast("No sources configured", "error"); return; }
-    setIsPlaylistLoading(true);
-    setMultiLoadProgress({ done: 0, total: list.length });
-    addToast(`Loading ${list.length} source${list.length > 1 ? "s" : ""}…`, "info");
 
-    const CONCURRENCY = 5;
-    let done = 0;
-    let okCount = 0;
-    const failed = [];
-    const merged = [];
-    const seen = new Set();
-
-    // Fetch + parse a single source, pushing deduped channels into `merged`.
-    const loadOne = async (src) => {
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 30000);
-        const res = await fetch(`/api/proxy?url=${encodeURIComponent(src.url)}`, { signal: ctrl.signal });
-        clearTimeout(t);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const parsed = parseM3U(await res.text());
-        for (const ch of parsed) {
-          if (!ch.url || seen.has(ch.url)) continue;
-          seen.add(ch.url);
-          merged.push(ch);
-        }
-        okCount++;
-      } catch (e) {
-        failed.push(src.name || src.url);
-      } finally {
-        done++;
-        setMultiLoadProgress({ done, total: list.length });
-      }
-    };
-
-    // Run in batches of CONCURRENCY to avoid hammering the proxy.
-    for (let i = 0; i < list.length; i += CONCURRENCY) {
-      await Promise.all(list.slice(i, i + CONCURRENCY).map(loadOne));
-    }
-
-    setMultiLoadProgress(null);
-    if (!merged.length) {
-      addToast("No channels loaded from any source.", "error");
-    } else {
-      setChannels(merged);
-      const urlText = `All Sources (${list.length})`;
-      setPlaylistUrl(urlText);
-      saveToCache(merged, urlText);
-      setSearchQuery(""); setCurrentCategory(null); setPage(1);
-      checkedRef.current.clear();
-      const fresh = {}; streamStatusRef.current = fresh; setStreamStatus(fresh);
-      const base = `Loaded ${merged.length.toLocaleString()} channels from ${okCount}/${list.length} sources`;
-      addToast(failed.length ? `${base}. Failed: ${failed.join(", ")}` : `${base}!`, failed.length ? "info" : "success");
-    }
-    setIsPlaylistLoading(false);
-  };
 
   const handleFileUpload = (file) => {
     setIsPlaylistLoading(true);
@@ -352,17 +376,7 @@ export default function IPTVPage() {
     reader.readAsText(file);
   };
 
-  const fetchLocalPlaylists = async () => {
-    try {
-      const res = await fetch("/api/playlists");
-      if (res.ok) {
-        const data = await res.json();
-        setLocalPlaylists(data.playlists || []);
-      }
-    } catch (err) {
-      console.error("Failed to load local playlists:", err);
-    }
-  };
+
 
   const uploadAndLoadFile = async (file) => {
     if (!file) return;

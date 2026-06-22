@@ -21,28 +21,43 @@
 
 const IPTV_SOURCES = [
   // ── iptv-org (the master public collection) ─────────────────────────────
-  { name: "iptv-org Full Index", url: "https://iptv-org.github.io/iptv/index.m3u" },
+  // { name: "iptv-org Full Index", url: "https://iptv-org.github.io/iptv/index.m3u" },
 
   // ── Independent community collections (channels NOT in iptv-org) ────────
-  { name: "Free-TV Worldwide",   url: "https://raw.githubusercontent.com/free-tv/iptv/master/playlist.m3u8" },
-  { name: "jromero88 — IPTV",    url: "https://raw.githubusercontent.com/jromero88/iptv/master/IPTV.m3u" },
-  { name: "jromero88 — Channels",url: "https://raw.githubusercontent.com/jromero88/iptv/master/channels.m3u" },
-  { name: "jromero88 — OTT",     url: "https://raw.githubusercontent.com/jromero88/iptv/master/ottplayer.m3u" },
+  // { name: "Free-TV Worldwide",   url: "https://raw.githubusercontent.com/free-tv/iptv/master/playlist.m3u8" },
+  // { name: "jromero88 — IPTV",    url: "https://raw.githubusercontent.com/jromero88/iptv/master/IPTV.m3u" },
+  // { name: "jromero88 — Channels",url: "https://raw.githubusercontent.com/jromero88/iptv/master/channels.m3u" },
+  // { name: "jromero88 — OTT",     url: "https://raw.githubusercontent.com/jromero88/iptv/master/ottplayer.m3u" },
 
   // ── Other community sources ──────────────────────────────────────────────
-  { name: "Lupael IPTV",         url: "https://lupael.github.io/IPTV/running.m3u" },
-  { name: "Mrgify BDIX IPTV",    url: "https://raw.githubusercontent.com/abusaeeidx/Mrgify-BDIX-IPTV/main/playlist.m3u" },
+  // { name: "Lupael IPTV",         url: "https://lupael.github.io/IPTV/running.m3u" },
+  // { name: "Mrgify BDIX IPTV",    url: "https://raw.githubusercontent.com/abusaeeidx/Mrgify-BDIX-IPTV/main/playlist.m3u" },
+  // { name: "Romaxa55 World IPTV", url: "https://romaxa55.github.io/world_ip_tv/output/index.m3u" },
+  // { name: "JagoBD Bangladeshi",  url: "https://raw.githubusercontent.com/tahsinulmohsin/jagobd-m3u8-scraper/master/playlist.m3u8" },
 
   // ── ⚽ Sports / World Cup focused ─────────────────────────────────────────
   //  These surface in the app's "World Cup" tab automatically — any channel
   //  whose name/group/tvg-id matches FIFA, World Cup, mundial, sports, beIN,
   //  ESPN, etc. shows up there when you toggle the World Cup filter.
-  { name: "iptv-org Sports",        url: "https://iptv-org.github.io/iptv/categories/sports.m3u" },
-  { name: "BeIN Sports (big)",       url: "https://gist.githubusercontent.com/Dev-Gaminger010/36540530e38d3309000f6ff7a0c65f5f/raw" },
-  { name: "Sports Mix (Randall)",    url: "https://gist.githubusercontent.com/ItsRandall/3119615c8b4732d7b56e5217d66edbab/raw" },
-  { name: "BeIN Sports FR",          url: "https://gist.githubusercontent.com/regragi-younes/a77b56c45b3c086cc166b79d5cc45e4a/raw" },
-  { name: "Sports (Fazzani)",        url: "https://gist.githubusercontent.com/Fazzani/722f67c30ada8bac4602f62a2aaccff6/raw" },
-  { name: "BuddyChewChew",      url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/plutotv_us.m3u" },
+  // { name: "iptv-org Sports",        url: "https://iptv-org.github.io/iptv/categories/sports.m3u" },
+  // { name: "BeIN Sports (big)",       url: "https://gist.githubusercontent.com/Dev-Gaminger010/36540530e38d3309000f6ff7a0c65f5f/raw" },
+  // { name: "Sports Mix (Randall)",    url: "https://gist.githubusercontent.com/ItsRandall/3119615c8b4732d7b56e5217d66edbab/raw" },
+  // { name: "BeIN Sports FR",          url: "https://gist.githubusercontent.com/regragi-younes/a77b56c45b3c086cc166b79d5cc45e4a/raw" },
+  // { name: "Sports (Fazzani)",        url: "https://gist.githubusercontent.com/Fazzani/722f67c30ada8bac4602f62a2aaccff6/raw" },
+
+  // ── 📺 FAST Channels (via BuddyChewChew) ───────────────────────────────────
+  // { name: "Pluto TV (US)",          url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/plutotv_us.m3u" },
+  // { name: "Pluto TV (All Regions)",  url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/plutotv_all.m3u" },
+  // { name: "Samsung TV Plus (US)",   url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/samsungtvplus_us.m3u" },
+  // { name: "Samsung TV Plus (All)",  url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/samsungtvplus_all.m3u" },
+  // { name: "Roku Channels (All)",    url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/roku_all.m3u" },
+  // { name: "Tubi TV Channels (All)", url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/tubi_all.m3u" },
+  // { name: "Plex TV Channels (All)", url: "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/refs/heads/main/playlists/plexs_all.m3u" },
+
+  // {
+  //   name: "Skym3u", 
+  //   url: "https://go.skym3u.top/is8m.m3u"
+  // },
 
   // ── More iptv-org index views (alternative organizations of the same set) ─
   // { name: "iptv-org by Country",  url: "https://iptv-org.github.io/iptv/index.country.m3u" },

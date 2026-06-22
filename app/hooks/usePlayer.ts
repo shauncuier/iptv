@@ -376,35 +376,35 @@ export function usePlayer({ activeChannel, addToast, setStreamStatus }: UsePlaye
     setAspectRatio((prev) => (prev === "contain" ? "cover" : prev === "cover" ? "fill" : "contain"));
   };
 
-  const nudgeVolume = (delta: number) => {
+  function nudgeVolume(delta: number) {
     const nv = Math.min(1, Math.max(0, volume + delta));
     setVolume(nv); setIsMuted(nv === 0);
     if (videoRef.current) { videoRef.current.volume = nv; videoRef.current.muted = nv === 0; }
     setGestureHint({ type: "volume", value: Math.round(nv * 100) });
     setTimeout(() => setGestureHint(null), 600);
-  };
+  }
 
-  const revealControls = () => {
+  function revealControls() {
     setControlsVisible(true);
     clearTimeout(controlsTimerRef.current);
     if (isPlaying) controlsTimerRef.current = setTimeout(() => setControlsVisible(false), 3500);
-  };
+  }
 
-  const togglePlay = () => {
+  function togglePlay() {
     const v = videoRef.current;
     if (!v || !activeChannel) return;
     if (isPlaying) { v.pause(); setIsPlaying(false); }
     else v.play().then(() => setIsPlaying(true)).catch(() => addToast("Cannot resume stream", "error"));
-  };
+  }
 
-  const toggleMute = () => { const v = videoRef.current; if (!v) return; v.muted = !isMuted; setIsMuted(!isMuted); };
+  function toggleMute() { const v = videoRef.current; if (!v) return; v.muted = !isMuted; setIsMuted(!isMuted); }
 
   const handleVolume = (e: any) => {
     const val = parseFloat(e.target.value); setVolume(val); setIsMuted(val === 0);
     if (videoRef.current) { videoRef.current.volume = val; videoRef.current.muted = val === 0; }
   };
 
-  const toggleFullscreen = () => {
+  function toggleFullscreen() {
     const c = playerContainerRef.current;
     const v = videoRef.current;
     if (document.fullscreenElement) { document.exitFullscreen(); return; }
@@ -417,7 +417,7 @@ export function usePlayer({ activeChannel, addToast, setStreamStatus }: UsePlaye
     } else {
       addToast("Fullscreen not supported on this device", "error");
     }
-  };
+  }
 
   const togglePip = async () => {
     const v = videoRef.current; if (!v) return;
